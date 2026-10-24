@@ -2,9 +2,19 @@ import * as vscode from 'vscode';
 import { WebSocket } from 'ws';
 
 const SERVER_URL = 'ws://localhost:8080';
+const SCHEME = 'parallel';
 
 let myRole: 'host' | 'guest' | undefined;
 let socket: WebSocket | undefined;
+
+// Guest side: the text being shown, and the address of the read-only tab
+let sharedText = '';
+let sharedUri: vscode.Uri | undefined;
+const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
+
+// Host side: the file being shared, and a timer to avoid sending on every keystroke
+let hostDoc: vscode.TextDocument | undefined;
+let sendTimer: NodeJS.Timeout | undefined;
 
 // ---------- connection ----------
 
@@ -22,6 +32,7 @@ function connect(): Promise<WebSocket> {
             }
             myRole = undefined;
             socket = undefined;
+            resetShared();
         });
     });
 }
@@ -33,12 +44,46 @@ function send(msg: object) {
     }
 }
 
+// ---------- sharing the document ----------
+
+// HOST: send the current text of the shared file
+function sendDoc() {
+    if (!hostDoc) {
+        return;
+    }
+    send({
+        t: 'doc',
+        text: hostDoc.getText(),
+        file: hostDoc.fileName.split(/[\\/]/).pop(),
+    });
+}
+
+// GUEST: show (or update) the read-only tab
+async function showSharedDoc(text: string, file: string) {
+    sharedText = text;
+    if (!sharedUri) {
+        sharedUri = vscode.Uri.from({ scheme: SCHEME, path: '/' + (file || 'shared.txt') });
+        const doc = await vscode.workspace.openTextDocument(sharedUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+    } else {
+        sharedChanged.fire(sharedUri);
+    }
+}
+
+// Forget everything about the shared file (session over)
+function resetShared() {
+    sharedUri = undefined;
+    sharedText = '';
+    hostDoc = undefined;
+}
+
 // ---------- messages from the server ----------
 
 function handleMessage(msg: any) {
     switch (msg.t) {
         case 'created':
             showCode(msg.code);
+            sendDoc();
             break;
         case 'join_request':
             handleJoinRequest(msg.name);
@@ -49,15 +94,22 @@ function handleMessage(msg: any) {
         case 'denied':
             vscode.window.showWarningMessage('The host denied your request.');
             myRole = undefined;
+            resetShared();
             socket?.close();
             break;
         case 'peers':
             // Pratham's sidebar will use this later
             console.log('peers:', msg.list);
+            // Host re-sends the document so late joiners see it
+            sendDoc();
+            break;
+        case 'doc':
+            showSharedDoc(msg.text, msg.file);
             break;
         case 'ended':
             vscode.window.showInformationMessage('The host ended the session.');
             myRole = undefined;
+            resetShared();
             socket?.close();
             break;
         case 'error':
@@ -99,6 +151,11 @@ export function activate(context: vscode.ExtensionContext) {
 
     // HOST: start a session
     const start = vscode.commands.registerCommand('parallel.start', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage('Open the file you want to share first.');
+            return;
+        }
         const name = await vscode.window.showInputBox({ prompt: 'Your name (host)?' });
         if (!name) {
             return;
@@ -110,6 +167,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         myRole = 'host';
+        hostDoc = editor.document;
         send({ t: 'create', name });
     });
 
@@ -138,7 +196,22 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
 
-    context.subscriptions.push(hello, start, join);
+    // Guest: the read-only "parallel:" files
+    const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
+        onDidChange: sharedChanged.event,
+        provideTextDocumentContent: () => sharedText,
+    });
+
+    // Host: send the file whenever it changes (wait 100 ms after the last keystroke)
+    const watcher = vscode.workspace.onDidChangeTextDocument((e) => {
+        if (myRole !== 'host' || e.document !== hostDoc) {
+            return;
+        }
+        clearTimeout(sendTimer);
+        sendTimer = setTimeout(sendDoc, 100);
+    });
+
+    context.subscriptions.push(hello, start, join, provider, watcher);
 }
 
 export function deactivate() {

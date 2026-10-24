@@ -108,4 +108,20 @@ wss.on('connection', (ws) => {
         send(ws, { t: 'error', msg: 'unknown type' });
     }
   });
+
+  ws.on('close', () => {
+    if (ws.role === 'host') {
+      const session = sessions.get(ws.code);
+      if (!session) return;
+      for (const peer of session.peers) send(peer.ws, { t: 'ended' });
+      for (const p of session.pending) send(p.ws, { t: 'ended' });
+      sessions.delete(ws.code);
+    } else if (ws.role === 'guest') {
+      const session = sessions.get(ws.code);
+      if (!session) return;
+      session.pending = session.pending.filter(p => p.ws !== ws);
+      session.peers = session.peers.filter(p => p.ws !== ws);
+      send(session.host, { t: 'peers', list: session.peers.map(p => p.name) });
+    }
+  });
 });

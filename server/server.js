@@ -44,6 +44,34 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'join': {
+        const session = sessions.get(msg.code);
+        if (!session) { send(ws, { t: 'error', msg: 'bad code' }); break; }
+        ws.name = msg.name;
+        ws.role = 'guest';
+        ws.code = msg.code;
+        session.pending.push({ ws, name: msg.name });
+        send(session.host, { t: 'join_request', name: msg.name });
+        break;
+      }
+
+      case 'decide': {
+        if (ws.role !== 'host') break;
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        const idx = session.pending.findIndex(p => p.name === msg.name);
+        if (idx === -1) break;
+        const [guest] = session.pending.splice(idx, 1);
+        if (msg.approve) {
+          session.peers.push(guest);
+          send(guest.ws, { t: 'joined' });
+          send(ws, { t: 'peers', list: session.peers.map(p => p.name) });
+        } else {
+          send(guest.ws, { t: 'denied' });
+        }
+        break;
+      }
+
       default:
         send(ws, { t: 'error', msg: 'unknown type' });
     }

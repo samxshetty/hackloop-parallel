@@ -35,25 +35,57 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.activate = activate;
 exports.deactivate = deactivate;
-// The module 'vscode' contains the VS Code extensibility API
-// Import the module and reference it with the alias vscode in your code below
 const vscode = __importStar(require("vscode"));
-// This method is called when your extension is activated
-// Your extension is activated the very first time the command is executed
-function activate(context) {
-    // Use the console to output diagnostic information (console.log) and errors (console.error)
-    // This line of code will only be executed once when your extension is activated
-    console.log('Congratulations, your extension "parallel" is now active!');
-    // The command has been defined in the package.json file
-    // Now provide the implementation of the command with registerCommand
-    // The commandId parameter must match the command field in package.json
-    const disposable = vscode.commands.registerCommand('parallel.helloWorld', () => {
-        // The code you place here will be executed every time your command is executed
-        // Display a message box to the user
-        vscode.window.showInformationMessage('Hello World from Parallel!');
-    });
-    context.subscriptions.push(disposable);
+// Remember who we are in the session (used by later steps)
+let myRole;
+// Makes a random 6-character code (fake for now; the server will make real ones)
+function makeFakeCode() {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = '';
+    for (let i = 0; i < 6; i++) {
+        code += chars[Math.floor(Math.random() * chars.length)];
+    }
+    return code;
 }
-// This method is called when your extension is deactivated
+function activate(context) {
+    // Step 1 command: ask for a name, show a fake code
+    const hello = vscode.commands.registerCommand('parallel.helloWorld', async () => {
+        const name = await vscode.window.showInputBox({ prompt: 'Your name?' });
+        if (!name) {
+            return;
+        }
+        vscode.window.showInformationMessage(`Welcome ${name}, your code is ABC123`);
+    });
+    // HOST: start a session
+    const start = vscode.commands.registerCommand('parallel.start', async () => {
+        const name = await vscode.window.showInputBox({ prompt: 'Your name (host)?' });
+        if (!name) {
+            return;
+        }
+        const code = makeFakeCode();
+        myRole = 'host';
+        const pick = await vscode.window.showInformationMessage(`Session started, ${name}! Your code is ${code}`, 'Copy code');
+        if (pick === 'Copy code') {
+            await vscode.env.clipboard.writeText(code);
+        }
+    });
+    // GUEST: join a session
+    const join = vscode.commands.registerCommand('parallel.join', async () => {
+        const code = await vscode.window.showInputBox({
+            prompt: 'Session code',
+            validateInput: (value) => value.trim().length === 6 ? null : 'The code has 6 characters',
+        });
+        if (!code) {
+            return;
+        }
+        const name = await vscode.window.showInputBox({ prompt: 'Your name?' });
+        if (!name) {
+            return;
+        }
+        myRole = 'guest';
+        vscode.window.showInformationMessage(`Hi ${name}! Waiting for the host to approve you (code ${code.toUpperCase()})...`);
+    });
+    context.subscriptions.push(hello, start, join);
+}
 function deactivate() { }
 //# sourceMappingURL=extension.js.map

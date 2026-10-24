@@ -16,6 +16,14 @@
       {
         "command": "parallel.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "parallel.start",
+        "title": "Parallel: Start Session"
+      },
+      {
+        "command": "parallel.join",
+        "title": "Parallel: Join Session"
       }
     ]
   },
@@ -28,17 +36,21 @@
     "test": "vscode-test"
   },
   "devDependencies": {
-    "@types/vscode": "^1.140.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "24.x",
-    "typescript-eslint": "^8.61.1",
+    "@types/vscode": "^1.140.0",
+    "@types/ws": "^8.18.2",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0",
     "eslint": "^10.5.0",
     "typescript": "^6.0.3",
-    "@vscode/test-cli": "^0.0.15",
-    "@vscode/test-electron": "^3.0.0"
+    "typescript-eslint": "^8.61.1"
   },
   "overrides": {
     "diff": "^8.0.4",
     "serialize-javascript": "^7.0.6"
+  },
+  "dependencies": {
+    "ws": "^8.22.0"
   }
 }

@@ -72,6 +72,38 @@ wss.on('connection', (ws) => {
         break;
       }
 
+      case 'doc': {
+        if (ws.role === 'host') {
+          const session = sessions.get(ws.code);
+          if (!session) break;
+          for (const peer of session.peers) {
+            send(peer.ws, msg);
+          }
+        } else {
+          console.log('blocked guest doc');
+        }
+        break;
+      }
+
+      case 'suggest': {
+        // host or guest: forward to host only
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        send(session.host, msg);
+        break;
+      }
+
+      case 'suggest_result': {
+        // host -> all peers
+        if (ws.role !== 'host') break;
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        for (const peer of session.peers) {
+          send(peer.ws, msg);
+        }
+        break;
+      }
+
       default:
         send(ws, { t: 'error', msg: 'unknown type' });
     }

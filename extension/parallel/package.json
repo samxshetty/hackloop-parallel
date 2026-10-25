@@ -24,6 +24,10 @@
       {
         "command": "parallel.join",
         "title": "Parallel: Join Session"
+      },
+      {
+        "command": "parallel.micTest",
+        "title": "Parallel: Test Microphone"
       }
     ]
   },

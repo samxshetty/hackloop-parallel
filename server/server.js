@@ -58,6 +58,7 @@ wss.on('connection', (ws) => {
         const code = genCode();
         sessions.set(code, { host: ws, peers: [], pending: [] });
         ws.role = 'superhost';
+        ws.name = msg.name;
         ws.code = code;
         send(ws, { t: 'created', code });
         break;
@@ -96,6 +97,22 @@ wss.on('connection', (ws) => {
         const session = sessions.get(ws.code);
         if (!session) break;
         sendToAll(session, msg, ws);
+        break;
+      }
+
+      case 'cursor': {
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        // only the superhost and approved guests may send cursors
+        const member = ws === session.host || session.peers.some((p) => p.ws === ws);
+        if (!member) break;
+        if (!Number.isInteger(msg.line) || !Number.isInteger(msg.character)) break;
+        sendToAll(session, {
+          t: 'cursor',
+          name: ws.name,
+          line: msg.line,
+          character: msg.character,
+        }, ws);
         break;
       }
 
@@ -146,6 +163,7 @@ wss.on('connection', (ws) => {
     } else {
       session.pending = session.pending.filter((p) => p.ws !== ws);
       session.peers = session.peers.filter((p) => p.ws !== ws);
+      sendToAll(session, { t: 'cursor_gone', name: ws.name });
       broadcastPeers(session);
     }
   });

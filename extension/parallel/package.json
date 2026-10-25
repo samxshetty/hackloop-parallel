@@ -19,10 +19,6 @@
   "contributes": {
     "commands": [
       {
-        "command": "parallel.helloWorld",
-        "title": "Hello World"
-      },
-      {
         "command": "parallel.start",
         "title": "Parallel: Start Session"
       },

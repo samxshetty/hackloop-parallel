@@ -18,6 +18,11 @@ let applyingRemote = false; // true while we write someone else's text into our 
 // Latest list of participants (name and role), from the server's "peers" message
 let lastPeers: { name: string; role: string }[] = [];
 
+// Remote cursors: name -> position, and one decoration style per person
+const cursors = new Map<string, { line: number; character: number }>();
+const cursorTypes = new Map<string, vscode.TextEditorDecorationType>();
+let cursorTimer: NodeJS.Timeout | undefined;
+
 // Status bar: shows your role and the session code
 const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
 
@@ -43,6 +48,12 @@ function languageFor(file: string): string | undefined {
         json: 'json', html: 'html', css: 'css', java: 'java', c: 'c', cpp: 'cpp',
     };
     return ext ? map[ext] : undefined;
+}
+
+// Is this document the shared file (our own copy, or the guest's read-only view)?
+function isSharedDoc(doc: vscode.TextDocument): boolean {
+    return doc === hostDoc ||
+        (sharedUri !== undefined && doc.uri.toString() === sharedUri.toString());
 }
 
 // EDITOR: send the current text of the shared file
@@ -122,6 +133,66 @@ function resetShared() {
     sharedText = '';
     hostDoc = undefined;
     lastPeers = [];
+    clearCursors();
+}
+
+// ---------- remote cursors ----------
+
+// A stable color per name, so everyone sees the same color for the same person
+function hueFor(name: string): number {
+    let h = 0;
+    for (const c of name) {
+        h = (h * 31 + c.charCodeAt(0)) % 360;
+    }
+    return h;
+}
+
+function typeFor(name: string): vscode.TextEditorDecorationType {
+    let t = cursorTypes.get(name);
+    if (!t) {
+        t = vscode.window.createTextEditorDecorationType({
+            backgroundColor: `hsla(${hueFor(name)}, 80%, 55%, 0.35)`,
+        });
+        cursorTypes.set(name, t);
+    }
+    return t;
+}
+
+// Draw every remote cursor in every visible editor that shows the shared file
+function repaintCursors() {
+    for (const editor of vscode.window.visibleTextEditors) {
+        if (!isSharedDoc(editor.document)) {
+            continue;
+        }
+        for (const [name, c] of cursors) {
+            const doc = editor.document;
+            const start = doc.validatePosition(new vscode.Position(c.line, c.character));
+            const end = doc.validatePosition(new vscode.Position(c.line, c.character + 1));
+            editor.setDecorations(typeFor(name), [{
+                range: new vscode.Range(start, end),
+                renderOptions: {
+                    after: {
+                        contentText: ` ${name} `,
+                        color: '#ffffff',
+                        backgroundColor: `hsl(${hueFor(name)}, 70%, 40%)`,
+                        margin: '0 0 0 2px',
+                    },
+                },
+            }]);
+        }
+    }
+}
+
+function removeCursor(name: string) {
+    cursors.delete(name);
+    cursorTypes.get(name)?.dispose();
+    cursorTypes.delete(name);
+}
+
+function clearCursors() {
+    for (const name of [...cursors.keys()]) {
+        removeCursor(name);
+    }
 }
 
 // ---------- UI helpers ----------
@@ -174,10 +245,16 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('doc', (msg) => {
         if (session.role === 'guest') {
             showSharedDoc(msg.text, msg.file);
+            setTimeout(repaintCursors, 100);
         } else {
-            applyRemote(msg.text); // another editor changed the file
+            applyRemote(msg.text).then(repaintCursors); // another editor changed the file
         }
     });
+    onMessage('cursor', (msg) => {
+        cursors.set(msg.name, { line: msg.line, character: msg.character });
+        repaintCursors();
+    });
+    onMessage('cursor_gone', (msg) => removeCursor(msg.name));
     onMessage('role', (msg) => {
         session.role = msg.role;
         updateStatus();
@@ -228,8 +305,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
         try {
             await connect();
-        } catch {
-            vscode.window.showErrorMessage('Cannot reach the server. Is it running?');
+        } catch (err: any) {
+            vscode.window.showErrorMessage(
+                'Cannot reach the server: ' + (err?.code ?? err?.message ?? err));
             return;
         }
         session.role = 'superhost';
@@ -254,8 +332,9 @@ export function activate(context: vscode.ExtensionContext) {
         }
         try {
             await connect();
-        } catch {
-            vscode.window.showErrorMessage('Cannot reach the server. Is it running?');
+        } catch (err: any) {
+            vscode.window.showErrorMessage(
+                'Cannot reach the server: ' + (err?.code ?? err?.message ?? err));
             return;
         }
         session.role = 'guest';
@@ -302,7 +381,24 @@ export function activate(context: vscode.ExtensionContext) {
         sendTimer = setTimeout(sendDoc, 100);
     });
 
-    context.subscriptions.push(hello, start, join, changeRole, provider, watcher, status);
+    // Everyone: send my cursor position when it moves inside the shared file
+    const selectionWatcher = vscode.window.onDidChangeTextEditorSelection((e) => {
+        if (!session.role || !isSharedDoc(e.textEditor.document)) {
+            return;
+        }
+        clearTimeout(cursorTimer);
+        cursorTimer = setTimeout(() => {
+            const p = e.selections[0].active;
+            send({ t: 'cursor', line: p.line, character: p.character });
+        }, 50);
+    });
+
+    // Redraw remote cursors when tabs open, close or move
+    const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
+
+    context.subscriptions.push(
+        hello, start, join, changeRole, provider, watcher,
+        selectionWatcher, visibleWatcher, status);
 }
 
 export function deactivate() {

@@ -1,72 +1,51 @@
 import * as vscode from 'vscode';
-import { WebSocket } from 'ws';
+import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
 
-const SERVER_URL = 'ws://localhost:8080';
+const SCHEME = 'parallel';
 
-let myRole: 'host' | 'guest' | undefined;
-let socket: WebSocket | undefined;
+// Guest side: the text being shown, and the address of the read-only tab
+let sharedText = '';
+let sharedUri: vscode.Uri | undefined;
+const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
 
-// ---------- connection ----------
+// Editor side: the file being shared, and a timer to avoid sending on every keystroke
+let hostDoc: vscode.TextDocument | undefined;
+let sendTimer: NodeJS.Timeout | undefined;
 
-// Connect and wait until the connection is actually open
-function connect(): Promise<WebSocket> {
-    return new Promise((resolve, reject) => {
-        socket?.close();
-        const ws = new WebSocket(SERVER_URL);
-        ws.on('open', () => { socket = ws; resolve(ws); });
-        ws.on('error', (err) => reject(err));
-        ws.on('message', (data) => handleMessage(JSON.parse(data.toString())));
-        ws.on('close', () => {
-            if (myRole !== undefined) {
-                vscode.window.showWarningMessage('Disconnected from the server.');
-            }
-            myRole = undefined;
-            socket = undefined;
-        });
+// ---------- sharing the document ----------
+
+// EDITOR: send the current text of the shared file
+function sendDoc() {
+    if (!hostDoc) {
+        return;
+    }
+    send({
+        t: 'doc',
+        text: hostDoc.getText(),
+        file: hostDoc.fileName.split(/[\\/]/).pop(),
     });
 }
 
-// Send an object to the server as JSON text
-function send(msg: object) {
-    if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(msg));
+// GUEST: show (or update) the read-only tab
+async function showSharedDoc(text: string, file: string) {
+    sharedText = text;
+    if (!sharedUri) {
+        sharedUri = vscode.Uri.from({ scheme: SCHEME, path: '/' + (file || 'shared.txt') });
+        const doc = await vscode.workspace.openTextDocument(sharedUri);
+        await vscode.window.showTextDocument(doc, { preview: false });
+    } else {
+        sharedChanged.fire(sharedUri);
     }
 }
 
-// ---------- messages from the server ----------
-
-function handleMessage(msg: any) {
-    switch (msg.t) {
-        case 'created':
-            showCode(msg.code);
-            break;
-        case 'join_request':
-            handleJoinRequest(msg.name);
-            break;
-        case 'joined':
-            vscode.window.showInformationMessage("You're in! The host approved you.");
-            break;
-        case 'denied':
-            vscode.window.showWarningMessage('The host denied your request.');
-            myRole = undefined;
-            socket?.close();
-            break;
-        case 'peers':
-            // Pratham's sidebar will use this later
-            console.log('peers:', msg.list);
-            break;
-        case 'ended':
-            vscode.window.showInformationMessage('The host ended the session.');
-            myRole = undefined;
-            socket?.close();
-            break;
-        case 'error':
-            vscode.window.showWarningMessage('Server: ' + msg.msg);
-            break;
-        default:
-            console.log('Unhandled message', msg);
-    }
+// Forget everything about the shared file (session over)
+function resetShared() {
+    sharedUri = undefined;
+    sharedText = '';
+    hostDoc = undefined;
 }
+
+// ---------- UI helpers ----------
 
 async function showCode(code: string) {
     const pick = await vscode.window.showInformationMessage(
@@ -85,9 +64,45 @@ async function handleJoinRequest(name: string) {
     send({ t: 'decide', name, approve: pick === 'Approve' });
 }
 
-// ---------- commands ----------
+// ---------- activate ----------
 
 export function activate(context: vscode.ExtensionContext) {
+
+    // Message handlers. Teammates add their own with onMessage in their own files.
+    onMessage('created', (msg) => { showCode(msg.code); sendDoc(); });
+    onMessage('join_request', (msg) => handleJoinRequest(msg.name));
+    onMessage('joined', () =>
+        vscode.window.showInformationMessage("You're in! The host approved you."));
+    onMessage('denied', () => {
+        vscode.window.showWarningMessage('The host denied your request.');
+        session.role = undefined;
+        resetShared();
+        disconnect();
+    });
+    onMessage('peers', (msg) => {
+        console.log('peers:', msg.peers ?? msg.list);
+        sendDoc(); // editor re-sends so late joiners see the file
+    });
+    onMessage('doc', (msg) => {
+        if (session.role === 'guest') {
+            showSharedDoc(msg.text, msg.file);
+        }
+    });
+    onMessage('ended', () => {
+        vscode.window.showInformationMessage('The host ended the session.');
+        session.role = undefined;
+        resetShared();
+        disconnect();
+    });
+    onMessage('error', (msg) =>
+        vscode.window.showWarningMessage('Server: ' + (msg.msg ?? msg.message)));
+    onMessage('closed', () => {
+        if (session.role !== undefined) {
+            vscode.window.showWarningMessage('Disconnected from the server.');
+        }
+        session.role = undefined;
+        resetShared();
+    });
 
     const hello = vscode.commands.registerCommand('parallel.helloWorld', async () => {
         const name = await vscode.window.showInputBox({ prompt: 'Your name?' });
@@ -97,8 +112,13 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.window.showInformationMessage(`Welcome ${name}, your code is ABC123`);
     });
 
-    // HOST: start a session
+    // SUPERHOST: start a session
     const start = vscode.commands.registerCommand('parallel.start', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) {
+            vscode.window.showErrorMessage('Open the file you want to share first.');
+            return;
+        }
         const name = await vscode.window.showInputBox({ prompt: 'Your name (host)?' });
         if (!name) {
             return;
@@ -109,7 +129,8 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Cannot reach the server. Is it running?');
             return;
         }
-        myRole = 'host';
+        session.role = 'superhost';
+        hostDoc = editor.document;
         send({ t: 'create', name });
     });
 
@@ -133,14 +154,29 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Cannot reach the server. Is it running?');
             return;
         }
-        myRole = 'guest';
+        session.role = 'guest';
         send({ t: 'join', code: code.trim().toUpperCase(), name });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
 
-    context.subscriptions.push(hello, start, join);
+    // Guest: the read-only "parallel:" files
+    const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
+        onDidChange: sharedChanged.event,
+        provideTextDocumentContent: () => sharedText,
+    });
+
+    // Editors: send the file whenever it changes (wait 100 ms after the last keystroke)
+    const watcher = vscode.workspace.onDidChangeTextDocument((e) => {
+        if (!isEditor() || e.document !== hostDoc) {
+            return;
+        }
+        clearTimeout(sendTimer);
+        sendTimer = setTimeout(sendDoc, 100);
+    });
+
+    context.subscriptions.push(hello, start, join, provider, watcher);
 }
 
 export function deactivate() {
-    socket?.close();
+    disconnect();
 }

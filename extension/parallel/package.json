@@ -25,7 +25,17 @@
         "command": "parallel.join",
         "title": "Parallel: Join Session"
       }
-    ]
+    ],
+    "configuration": {
+  "title": "Parallel",
+  "properties": {
+    "parallel.serverUrl": {
+      "type": "string",
+      "default": "ws://localhost:8080",
+      "description": "Address of the Parallel server"
+    }
+  }
+}
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

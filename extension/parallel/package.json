@@ -1,8 +1,13 @@
 {
   "name": "parallel",
   "displayName": "Parallel",
-  "description": "",
+  "description": "Live shared coding sessions with suggestions",
   "version": "0.0.1",
+  "publisher": "team-parallel",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/samxshetty/hackloop-parallel"
+  },
   "engines": {
     "vscode": "^1.140.0"
   },
@@ -26,20 +31,20 @@
         "title": "Parallel: Join Session"
       },
       {
-  "command": "parallel.changeRole",
-  "title": "Parallel: Change Role"
-}
+        "command": "parallel.changeRole",
+        "title": "Parallel: Change Role"
+      }
     ],
     "configuration": {
-  "title": "Parallel",
-  "properties": {
-    "parallel.serverUrl": {
-      "type": "string",
-      "default": "ws://localhost:8080",
-      "description": "Address of the Parallel server"
+      "title": "Parallel",
+      "properties": {
+        "parallel.serverUrl": {
+          "type": "string",
+          "default": "ws://localhost:8080",
+          "description": "Address of the Parallel server"
+        }
+      }
     }
-  }
-}
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",

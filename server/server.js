@@ -1,127 +1,313 @@
 'use strict';
 const { WebSocketServer } = require('ws');
+const crypto = require('crypto');
 
-const wss = new WebSocketServer({ port: 8080 });
-console.log('Server running on ws://localhost:8080');
+const PORT = process.env.PORT || 8080;
+const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
+const MAX_GUESTS = 20;                // approved plus waiting
+const MAX_NAME = 30;
+const MAX_BAD_CODES = 5;              // wrong codes per connection
+const MAX_BAD_CODES_PER_IP = 20;      // wrong codes per IP per minute
+const MAX_MSGS_PER_SEC = 200;         // per connection
+const MAX_PAYLOAD = 5 * 1024 * 1024;  // 5 MB per message (the extension refuses to send files over 4 MB)
+const HEARTBEAT_MS = 15000;
 
-const sessions = new Map(); // code -> { host, peers: [], pending: [] }
+const wss = new WebSocketServer({ port: PORT, maxPayload: MAX_PAYLOAD });
+console.log(`Server running on ws://localhost:${PORT}`);
+
+const sessions = new Map(); // code -> { host, peers: [], pending: [], createdAt }
+const badByIp = new Map();  // ip -> { count, resetAt }
+
+// ---------- helpers ----------
 
 function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 
+function fail(ws, text) {
+  send(ws, { t: 'error', msg: text });
+}
+
+// 6 characters, no lookalikes (no 0/O, 1/I), from a secure random source
 function genCode() {
-  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
   do {
-    code = Array.from({ length: 6 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
+    code = Array.from({ length: 6 }, () => chars[crypto.randomInt(chars.length)]).join('');
   } while (sessions.has(code));
   return code;
 }
 
-wss.on('connection', (ws) => {
-  ws.on('message', (data) => {
-    let msg;
-    try {
-      msg = JSON.parse(data);
-    } catch {
-      send(ws, { t: 'error', msg: 'bad json' });
-      return;
-    }
+const isEditor = (ws) => ws.role === 'superhost' || ws.role === 'host';
+
+// approved members only: the superhost and approved guests
+const isMember = (ws, session) =>
+  ws === session.host || session.peers.some((p) => p.ws === ws);
+
+function everyone(session) {
+  return [session.host, ...session.peers.map((p) => p.ws)];
+}
+
+function sendToAll(session, obj, except) {
+  for (const w of everyone(session)) {
+    if (w !== except) send(w, obj);
+  }
+}
+
+// send the participant list (names and roles) to everyone
+function broadcastPeers(session) {
+  const peers = session.peers.map((p) => ({ name: p.name, role: p.ws.role }));
+  sendToAll(session, { t: 'peers', list: peers.map((p) => p.name), peers });
+}
+
+function cleanName(n) {
+  return typeof n === 'string' ? n.trim().slice(0, MAX_NAME) : '';
+}
+
+// names must be unique in a session (not case-sensitive), host included
+function nameTaken(session, name) {
+  const lower = name.toLowerCase();
+  const all = [session.host, ...session.peers.map((p) => p.ws), ...session.pending.map((p) => p.ws)];
+  return all.some((w) => w.name && w.name.toLowerCase() === lower);
+}
+
+function ipBlocked(ip) {
+  const rec = badByIp.get(ip);
+  return !!rec && Date.now() < rec.resetAt && rec.count > MAX_BAD_CODES_PER_IP;
+}
+
+// count a wrong code; returns true when this connection or IP has tried too often
+function tooManyBadCodes(ws) {
+  ws.badCodes = (ws.badCodes || 0) + 1;
+  const now = Date.now();
+  let rec = badByIp.get(ws.ip);
+  if (!rec || now > rec.resetAt) {
+    rec = { count: 0, resetAt: now + 60000 };
+    badByIp.set(ws.ip, rec);
+  }
+  rec.count++;
+  return ws.badCodes >= MAX_BAD_CODES || rec.count > MAX_BAD_CODES_PER_IP;
+}
+
+// ---------- messages ----------
+
+function handle(ws, data) {
+  // simple flood protection
+  const now = Date.now();
+  if (now - ws.windowStart > 1000) { ws.windowStart = now; ws.msgCount = 0; }
+  if (++ws.msgCount > MAX_MSGS_PER_SEC) { ws.terminate(); return; }
+
+  let msg;
+  try {
+    msg = JSON.parse(data);
+  } catch {
+    fail(ws, 'bad json');
+    return;
+  }
+  // JSON can also be null, a number or a list: only objects with a text "t" are valid
+  if (!msg || typeof msg !== 'object' || typeof msg.t !== 'string') {
+    fail(ws, 'bad message');
+    return;
+  }
+
+  if (msg.t === 'doc') {
+    console.log('recv:', { t: 'doc', file: msg.file, length: String(msg.text ?? '').length });
+  } else {
     console.log('recv:', msg);
+  }
 
-    switch (msg.t) {
-      case 'ping':
-        send(ws, { t: 'pong' });
-        break;
+  switch (msg.t) {
+    case 'ping':
+      send(ws, { t: 'pong' });
+      break;
 
-      case 'create': {
-        const code = genCode();
-        sessions.set(code, { host: ws, peers: [], pending: [] });
-        ws.role = 'host';
-        ws.code = code;
-        send(ws, { t: 'created', code });
-        break;
-      }
+    case 'create': {
+      if (ws.code) { fail(ws, 'already in a session'); break; }
+      const name = cleanName(msg.name);
+      if (!name) { fail(ws, 'name required'); break; }
+      const code = genCode();
+      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now() });
+      ws.role = 'superhost';
+      ws.name = name;
+      ws.code = code;
+      send(ws, { t: 'created', code });
+      break;
+    }
 
-      case 'join': {
-        const session = sessions.get(msg.code);
-        if (!session) { send(ws, { t: 'error', msg: 'bad code' }); break; }
-        ws.name = msg.name;
-        ws.role = 'guest';
-        ws.code = msg.code;
-        session.pending.push({ ws, name: msg.name });
-        send(session.host, { t: 'join_request', name: msg.name });
-        break;
-      }
-
-      case 'decide': {
-        if (ws.role !== 'host') break;
-        const session = sessions.get(ws.code);
-        if (!session) break;
-        const idx = session.pending.findIndex(p => p.name === msg.name);
-        if (idx === -1) break;
-        const [guest] = session.pending.splice(idx, 1);
-        if (msg.approve) {
-          session.peers.push(guest);
-          send(guest.ws, { t: 'joined' });
-          send(ws, { t: 'peers', list: session.peers.map(p => p.name) });
+    case 'join': {
+      if (ws.code) { fail(ws, 'already in a session'); break; }
+      if (ipBlocked(ws.ip)) { fail(ws, 'too many attempts, wait a minute'); break; }
+      const name = cleanName(msg.name);
+      if (!name) { fail(ws, 'name required'); break; }
+      const code = typeof msg.code === 'string' ? msg.code.trim().toUpperCase() : '';
+      const session = sessions.get(code);
+      if (!session) {
+        if (tooManyBadCodes(ws)) {
+          fail(ws, 'too many wrong codes');
+          ws.close();
         } else {
-          send(guest.ws, { t: 'denied' });
+          fail(ws, 'bad code');
         }
         break;
       }
+      if (Date.now() - session.createdAt > CODE_TTL_MS) { fail(ws, 'code expired'); break; }
+      if (session.peers.length + session.pending.length >= MAX_GUESTS) { fail(ws, 'session full'); break; }
+      if (nameTaken(session, name)) { fail(ws, 'name taken'); break; }
+      ws.name = name;
+      ws.role = 'guest';
+      ws.code = code;
+      session.pending.push({ ws, name });
+      send(session.host, { t: 'join_request', name });
+      break;
+    }
 
-      case 'doc': {
-        if (ws.role === 'host') {
-          const session = sessions.get(ws.code);
-          if (!session) break;
-          for (const peer of session.peers) {
-            send(peer.ws, msg);
-          }
-        } else {
-          console.log('blocked guest doc');
-        }
-        break;
+    case 'decide': {
+      if (!isEditor(ws)) break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      const idx = session.pending.findIndex((p) => p.name === msg.name);
+      if (idx === -1) { fail(ws, 'that person already left or was already decided'); break; }
+      const [guest] = session.pending.splice(idx, 1);
+      if (msg.approve) {
+        session.peers.push(guest);
+        send(guest.ws, { t: 'joined' });
+        broadcastPeers(session);
+      } else {
+        send(guest.ws, { t: 'denied' });
       }
+      break;
+    }
 
-      case 'suggest': {
-        // host or guest: forward to host only
-        const session = sessions.get(ws.code);
-        if (!session) break;
-        send(session.host, msg);
-        break;
+    case 'doc': {
+      if (!isEditor(ws)) { console.log('blocked guest doc'); break; }
+      if (typeof msg.text !== 'string') break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      sendToAll(session, msg, ws);
+      break;
+    }
+
+    case 'cursor': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!Number.isInteger(msg.line) || !Number.isInteger(msg.character)) break;
+      sendToAll(session, {
+        t: 'cursor',
+        name: ws.name,
+        line: msg.line,
+        character: msg.character,
+      }, ws);
+      break;
+    }
+
+    case 'suggest': {
+      // approved members only; forwarded to every editor except the sender.
+      // "from" is set by the server, so nobody can pretend to be someone else.
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      const out = { ...msg, from: ws.name };
+      for (const w of everyone(session)) {
+        if (isEditor(w) && w !== ws) send(w, out);
       }
+      break;
+    }
 
-      case 'suggest_result': {
-        // host -> all peers
-        if (ws.role !== 'host') break;
-        const session = sessions.get(ws.code);
-        if (!session) break;
-        for (const peer of session.peers) {
-          send(peer.ws, msg);
-        }
-        break;
-      }
+    case 'suggest_result': {
+      if (!isEditor(ws)) break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      sendToAll(session, { ...msg, from: ws.name }, ws);
+      break;
+    }
 
-      default:
-        send(ws, { t: 'error', msg: 'unknown type' });
+    case 'role': {
+      // only the superhost can promote or demote
+      if (ws.role !== 'superhost') break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      if (msg.role !== 'host' && msg.role !== 'guest') break;
+      const target = session.peers.find((p) => p.name === msg.name);
+      if (!target) { fail(ws, 'no such person'); break; }
+      target.ws.role = msg.role;
+      send(target.ws, { t: 'role', role: msg.role });
+      broadcastPeers(session);
+      break;
+    }
+
+    default:
+      fail(ws, 'unknown type');
+  }
+}
+
+function cleanup(ws) {
+  const session = sessions.get(ws.code);
+  if (!session) return;
+  if (ws === session.host) {
+    for (const peer of session.peers) send(peer.ws, { t: 'ended' });
+    for (const p of session.pending) send(p.ws, { t: 'ended' });
+    sessions.delete(ws.code);
+  } else {
+    const wasPeer = session.peers.some((p) => p.ws === ws);
+    const wasPending = session.pending.some((p) => p.ws === ws);
+    session.pending = session.pending.filter((p) => p.ws !== ws);
+    session.peers = session.peers.filter((p) => p.ws !== ws);
+    if (wasPeer) {
+      sendToAll(session, { t: 'cursor_gone', name: ws.name });
+      sendToAll(session, { t: 'left', name: ws.name });
+      broadcastPeers(session);
+    } else if (wasPending) {
+      send(session.host, { t: 'left', name: ws.name, pending: true });
+    }
+  }
+}
+
+// ---------- connections ----------
+
+wss.on('connection', (ws, req) => {
+  ws.isAlive = true;
+  ws.ip = req.socket.remoteAddress;
+  ws.windowStart = Date.now();
+  ws.msgCount = 0;
+
+  ws.on('pong', () => { ws.isAlive = true; });
+  ws.on('error', (err) => console.log('socket error:', err.message));
+  ws.on('message', (data) => {
+    try {
+      handle(ws, data);
+    } catch (err) {
+      console.error('handler error:', err);
     }
   });
-
   ws.on('close', () => {
-    if (ws.role === 'host') {
-      const session = sessions.get(ws.code);
-      if (!session) return;
-      for (const peer of session.peers) send(peer.ws, { t: 'ended' });
-      for (const p of session.pending) send(p.ws, { t: 'ended' });
-      sessions.delete(ws.code);
-    } else if (ws.role === 'guest') {
-      const session = sessions.get(ws.code);
-      if (!session) return;
-      session.pending = session.pending.filter(p => p.ws !== ws);
-      session.peers = session.peers.filter(p => p.ws !== ws);
-      send(session.host, { t: 'peers', list: session.peers.map(p => p.name) });
+    try {
+      cleanup(ws);
+    } catch (err) {
+      console.error('cleanup error:', err);
     }
   });
 });
+
+// Heartbeat: a connection that stops answering (Wi-Fi dropped) is closed,
+// which ends the session for everyone else instead of leaving it hanging.
+// It also clears old wrong-code records so the map does not grow forever.
+const heartbeat = setInterval(() => {
+  const now = Date.now();
+  for (const [ip, rec] of badByIp) {
+    if (now > rec.resetAt) badByIp.delete(ip);
+  }
+  for (const ws of wss.clients) {
+    if (ws.isAlive === false) {
+      ws.terminate();
+      continue;
+    }
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, HEARTBEAT_MS);
+
+wss.on('close', () => clearInterval(heartbeat));
+wss.on('error', (err) => console.error('server error:', err.message));
+
+// Last safety net: log and keep running
+process.on('uncaughtException', (err) => console.error('uncaught:', err));
+process.on('unhandledRejection', (err) => console.error('unhandled rejection:', err));

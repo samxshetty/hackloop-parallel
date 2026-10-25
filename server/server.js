@@ -6,6 +6,7 @@ const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
 const MAX_GUESTS = 20;                // approved plus waiting
 const MAX_NAME = 30;
+const MAX_CHAT = 500;                 // characters per chat message
 const MAX_BAD_CODES = 5;              // wrong codes per connection
 const MAX_BAD_CODES_PER_IP = 20;      // wrong codes per IP per minute
 const MAX_MSGS_PER_SEC = 200;         // per connection
@@ -231,6 +232,29 @@ function handle(ws, data) {
       target.ws.role = msg.role;
       send(target.ws, { t: 'role', role: msg.role });
       broadcastPeers(session);
+      break;
+    }
+
+    case 'kick': {
+      // only the superhost can remove someone
+      if (ws.role !== 'superhost') break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      const target = session.peers.find((p) => p.name === msg.name);
+      if (!target) { fail(ws, 'no such person'); break; }
+      send(target.ws, { t: 'kicked' });
+      target.ws.close(); // cleanup() then tells everyone they left
+      break;
+    }
+
+    case 'chat': {
+      // approved members only; "from" is set by the server
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (typeof msg.text !== 'string') break;
+      const text = msg.text.trim().slice(0, MAX_CHAT);
+      if (!text) break;
+      sendToAll(session, { t: 'chat', from: ws.name, text }, ws);
       break;
     }
 

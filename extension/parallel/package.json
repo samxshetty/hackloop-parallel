@@ -29,7 +29,12 @@
       {
         "command": "parallel.changeRole",
         "title": "Parallel: Change Role"
-      }
+      },
+      { "command": "parallel.copyCode", "title": "Parallel: Copy Session Code" },
+{ "command": "parallel.leave", "title": "Parallel: Leave Session" },
+{ "command": "parallel.kick", "title": "Parallel: Remove a Guest" },
+{ "command": "parallel.follow", "title": "Parallel: Follow a Person" },
+{ "command": "parallel.chat", "title": "Parallel: Send Chat Message" }
     ],
     "configuration": {
       "title": "Parallel",

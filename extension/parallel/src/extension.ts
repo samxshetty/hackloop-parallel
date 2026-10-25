@@ -17,26 +17,41 @@ let sendTimer: NodeJS.Timeout | undefined;
 let applyingRemote = false; // true while we write someone else's text into our file
 let warnedTooBig = false;   // so the "file too large" warning shows once, not on every keystroke
 
+// A promoted guest's editable copy (an unsaved tab), so it can be wiped on exit
+let promotedCopy: vscode.TextDocument | undefined;
+
 // Latest list of participants (name and role), from the server's "peers" message
 let lastPeers: { name: string; role: string }[] = [];
 
 // False until the server accepts our create or join; used to leave cleanly on refusal
 let joinedOk = false;
 
+// The session code (superhost only), for the status bar and Copy Code
+let sessionCode = '';
+
+// Whose cursor we are following (follow mode)
+let followName: string | undefined;
+
+// Chat history, also shown as popups
+const chatLog = vscode.window.createOutputChannel('Parallel Chat');
+
 // Remote cursors: name -> position, and one decoration style per person
 const cursors = new Map<string, { line: number; character: number }>();
 const cursorTypes = new Map<string, vscode.TextEditorDecorationType>();
 let cursorTimer: NodeJS.Timeout | undefined;
 
-// Status bar: shows your role and the session code
+// Status bar: shows your role, the session code and how many people are in
 const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
 
-function updateStatus(code?: string) {
+function updateStatus() {
     if (!session.role) {
         status.hide();
         return;
     }
-    status.text = `$(broadcast) Parallel: ${session.role}` + (code ? ` · ${code}` : '');
+    const people = lastPeers.length + 1; // approved guests plus the superhost
+    status.text = `$(broadcast) Parallel: ${session.role}` +
+        (sessionCode ? ` · ${sessionCode}` : '') +
+        ` · ${people} ${people === 1 ? 'person' : 'people'}`;
     status.show();
 }
 
@@ -139,20 +154,56 @@ async function becomeEditor() {
         language: languageFor(sharedFile),
     });
     hostDoc = doc;
+    promotedCopy = doc;
     hostFileName = sharedFile;
     await vscode.window.showTextDocument(doc, { preview: false });
 }
 
+// Close and empty every local copy of the shared file.
+// The superhost's own original file is never touched.
+async function wipeLocalCopies(readOnlyUri: vscode.Uri | undefined) {
+    const copy = promotedCopy;
+    promotedCopy = undefined;
+
+    const tabs = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .filter((tab) => {
+            if (!(tab.input instanceof vscode.TabInputText)) {
+                return false;
+            }
+            const u = tab.input.uri.toString();
+            return (readOnlyUri !== undefined && u === readOnlyUri.toString()) ||
+                (copy !== undefined && u === copy.uri.toString());
+        });
+
+    // Empty the editable copy first, so closing it does not ask "save changes?"
+    if (copy && !copy.isClosed) {
+        const edit = new vscode.WorkspaceEdit();
+        edit.replace(copy.uri,
+            new vscode.Range(copy.positionAt(0), copy.positionAt(copy.getText().length)), '');
+        await vscode.workspace.applyEdit(edit);
+    }
+    await vscode.window.tabGroups.close(tabs);
+}
+
 // Forget everything about the shared file (session over)
 function resetShared() {
+    const oldUri = sharedUri;
     sharedUri = undefined;
     sharedText = '';
+    if (oldUri) {
+        sharedChanged.fire(oldUri); // the read-only tab goes blank right away
+    }
     hostDoc = undefined;
     lastPeers = [];
     joinedOk = false;
     warnedTooBig = false;
+    sessionCode = '';
+    followName = undefined;
     session.name = '';
+    chatLog.clear();
     clearCursors();
+    wipeLocalCopies(oldUri).catch((err) => console.error('wipe failed:', err));
 }
 
 // ---------- remote cursors ----------
@@ -202,6 +253,18 @@ function repaintCursors() {
     }
 }
 
+// Scroll to someone's cursor (follow mode)
+function followCursor(line: number, character: number) {
+    for (const editor of vscode.window.visibleTextEditors) {
+        if (!isSharedDoc(editor.document)) {
+            continue;
+        }
+        const pos = editor.document.validatePosition(new vscode.Position(line, character));
+        editor.revealRange(new vscode.Range(pos, pos),
+            vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    }
+}
+
 function removeCursor(name: string) {
     cursors.delete(name);
     cursorTypes.get(name)?.dispose();
@@ -240,9 +303,10 @@ export function activate(context: vscode.ExtensionContext) {
     // Message handlers. Teammates add their own with onMessage in their own files.
     onMessage('created', (msg) => {
         joinedOk = true;
+        sessionCode = msg.code;
         showCode(msg.code);
         sendDoc();
-        updateStatus(msg.code);
+        updateStatus();
     });
     onMessage('join_request', (msg) => handleJoinRequest(msg.name));
     onMessage('joined', () => {
@@ -260,6 +324,7 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('peers', (msg) => {
         lastPeers = msg.peers ??
             (msg.list ?? []).map((n: string) => ({ name: n, role: 'guest' }));
+        updateStatus();
         console.log('peers:', lastPeers);
         sendDoc(); // editors re-send so late joiners and demoted people see the file
     });
@@ -274,13 +339,35 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('cursor', (msg) => {
         cursors.set(msg.name, { line: msg.line, character: msg.character });
         repaintCursors();
+        if (msg.name === followName) {
+            followCursor(msg.line, msg.character);
+        }
     });
-    onMessage('cursor_gone', (msg) => removeCursor(msg.name));
-        onMessage('left', (msg) => {
+    onMessage('cursor_gone', (msg) => {
+        removeCursor(msg.name);
+        if (msg.name === followName) {
+            followName = undefined;
+        }
+    });
+    onMessage('left', (msg) => {
         vscode.window.showInformationMessage(
             msg.pending
                 ? `${msg.name} left before being approved.`
                 : `${msg.name} left the session.`);
+    });
+    onMessage('kicked', () => {
+        vscode.window.showWarningMessage('The host removed you from the session.');
+        session.role = undefined;
+        updateStatus();
+        resetShared();
+        disconnect();
+    });
+    onMessage('chat', (msg) => {
+        if (typeof msg.text !== 'string') {
+            return;
+        }
+        chatLog.appendLine(`${msg.from}: ${msg.text}`);
+        vscode.window.showInformationMessage(`${msg.from}: ${msg.text}`);
     });
     onMessage('role', (msg) => {
         session.role = msg.role;
@@ -401,6 +488,95 @@ export function activate(context: vscode.ExtensionContext) {
         send({ t: 'role', name: who.label, role });
     });
 
+    // Copy the session code again
+    const copyCode = vscode.commands.registerCommand('parallel.copyCode', async () => {
+        if (!sessionCode) {
+            vscode.window.showInformationMessage('Only the host has a session code to copy.');
+            return;
+        }
+        await vscode.env.clipboard.writeText(sessionCode);
+        vscode.window.showInformationMessage('Session code copied.');
+    });
+
+    // Leave (guests) or end (superhost) without closing the window
+    const leave = vscode.commands.registerCommand('parallel.leave', () => {
+        if (!session.role) {
+            vscode.window.showInformationMessage('You are not in a session.');
+            return;
+        }
+        const wasHost = session.role === 'superhost';
+        session.role = undefined;
+        updateStatus();
+        resetShared();
+        disconnect();
+        vscode.window.showInformationMessage(
+            wasHost ? 'You ended the session.' : 'You left the session.');
+    });
+
+    // SUPERHOST: remove a guest
+    const kick = vscode.commands.registerCommand('parallel.kick', async () => {
+        if (session.role !== 'superhost') {
+            vscode.window.showErrorMessage('Only the super host can remove people.');
+            return;
+        }
+        if (lastPeers.length === 0) {
+            vscode.window.showInformationMessage('Nobody has joined yet.');
+            return;
+        }
+        const who = await vscode.window.showQuickPick(
+            lastPeers.map((p) => ({ label: p.name, description: p.role })),
+            { placeHolder: 'Who do you want to remove?' });
+        if (who) {
+            send({ t: 'kick', name: who.label });
+        }
+    });
+
+    // Follow someone's cursor (pick again to stop)
+    const follow = vscode.commands.registerCommand('parallel.follow', async () => {
+        if (!session.role) {
+            vscode.window.showInformationMessage('You are not in a session.');
+            return;
+        }
+        // the superhost is not in the peers list, but shows up once their cursor has moved
+        const names = new Set<string>([...lastPeers.map((p) => p.name), ...cursors.keys()]);
+        names.delete(session.name);
+        const items = [...names].map((n) => ({ label: n }));
+        if (followName) {
+            items.unshift({ label: '$(close) Stop following' });
+        }
+        if (items.length === 0) {
+            vscode.window.showInformationMessage('Nobody to follow yet.');
+            return;
+        }
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: 'Follow whom?' });
+        if (!pick) {
+            return;
+        }
+        if (pick.label.startsWith('$(close)')) {
+            followName = undefined;
+            return;
+        }
+        followName = pick.label;
+        const c = cursors.get(followName);
+        if (c) {
+            followCursor(c.line, c.character);
+        }
+    });
+
+    // Chat
+    const chat = vscode.commands.registerCommand('parallel.chat', async () => {
+        if (!session.role) {
+            vscode.window.showInformationMessage('You are not in a session.');
+            return;
+        }
+        const text = await vscode.window.showInputBox({ prompt: 'Message to everyone' });
+        if (!text || !text.trim()) {
+            return;
+        }
+        send({ t: 'chat', text: text.trim() });
+        chatLog.appendLine(`${session.name}: ${text.trim()}`);
+    });
+
     // The read-only "parallel:" files
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
@@ -432,8 +608,8 @@ export function activate(context: vscode.ExtensionContext) {
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
     context.subscriptions.push(
-        start, join, changeRole, provider, watcher,
-        selectionWatcher, visibleWatcher, status);
+        start, join, changeRole, copyCode, leave, kick, follow, chat,
+        provider, watcher, selectionWatcher, visibleWatcher, status, chatLog);
 }
 
 export function deactivate() {

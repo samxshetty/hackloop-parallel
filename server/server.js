@@ -19,6 +19,25 @@ function genCode() {
   return code;
 }
 
+const isEditor = (ws) => ws.role === 'superhost' || ws.role === 'host';
+
+// everyone in a session: the superhost plus approved guests
+function everyone(session) {
+  return [session.host, ...session.peers.map((p) => p.ws)];
+}
+
+function sendToAll(session, obj, except) {
+  for (const w of everyone(session)) {
+    if (w !== except) send(w, obj);
+  }
+}
+
+// send the participant list (names and roles) to everyone
+function broadcastPeers(session) {
+  const peers = session.peers.map((p) => ({ name: p.name, role: p.ws.role }));
+  sendToAll(session, { t: 'peers', list: peers.map((p) => p.name), peers });
+}
+
 wss.on('connection', (ws) => {
   ws.on('message', (data) => {
     let msg;
@@ -38,7 +57,7 @@ wss.on('connection', (ws) => {
       case 'create': {
         const code = genCode();
         sessions.set(code, { host: ws, peers: [], pending: [] });
-        ws.role = 'host';
+        ws.role = 'superhost';
         ws.code = code;
         send(ws, { t: 'created', code });
         break;
@@ -56,16 +75,16 @@ wss.on('connection', (ws) => {
       }
 
       case 'decide': {
-        if (ws.role !== 'host') break;
+        if (!isEditor(ws)) break;
         const session = sessions.get(ws.code);
         if (!session) break;
-        const idx = session.pending.findIndex(p => p.name === msg.name);
+        const idx = session.pending.findIndex((p) => p.name === msg.name);
         if (idx === -1) break;
         const [guest] = session.pending.splice(idx, 1);
         if (msg.approve) {
           session.peers.push(guest);
           send(guest.ws, { t: 'joined' });
-          send(ws, { t: 'peers', list: session.peers.map(p => p.name) });
+          broadcastPeers(session);
         } else {
           send(guest.ws, { t: 'denied' });
         }
@@ -73,34 +92,42 @@ wss.on('connection', (ws) => {
       }
 
       case 'doc': {
-        if (ws.role === 'host') {
-          const session = sessions.get(ws.code);
-          if (!session) break;
-          for (const peer of session.peers) {
-            send(peer.ws, msg);
-          }
-        } else {
-          console.log('blocked guest doc');
-        }
+        if (!isEditor(ws)) { console.log('blocked guest doc'); break; }
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        sendToAll(session, msg, ws);
         break;
       }
 
       case 'suggest': {
-        // host or guest: forward to host only
+        // forward to every editor except the sender
         const session = sessions.get(ws.code);
         if (!session) break;
-        send(session.host, msg);
+        for (const w of everyone(session)) {
+          if (isEditor(w) && w !== ws) send(w, msg);
+        }
         break;
       }
 
       case 'suggest_result': {
-        // host -> all peers
-        if (ws.role !== 'host') break;
+        if (!isEditor(ws)) break;
         const session = sessions.get(ws.code);
         if (!session) break;
-        for (const peer of session.peers) {
-          send(peer.ws, msg);
-        }
+        sendToAll(session, msg, ws);
+        break;
+      }
+
+      case 'role': {
+        // only the superhost can promote or demote
+        if (ws.role !== 'superhost') break;
+        const session = sessions.get(ws.code);
+        if (!session) break;
+        if (msg.role !== 'host' && msg.role !== 'guest') break;
+        const target = session.peers.find((p) => p.name === msg.name);
+        if (!target) { send(ws, { t: 'error', msg: 'no such person' }); break; }
+        target.ws.role = msg.role;
+        send(target.ws, { t: 'role', role: msg.role });
+        broadcastPeers(session);
         break;
       }
 
@@ -110,18 +137,16 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (ws.role === 'host') {
-      const session = sessions.get(ws.code);
-      if (!session) return;
+    const session = sessions.get(ws.code);
+    if (!session) return;
+    if (ws.role === 'superhost') {
       for (const peer of session.peers) send(peer.ws, { t: 'ended' });
       for (const p of session.pending) send(p.ws, { t: 'ended' });
       sessions.delete(ws.code);
-    } else if (ws.role === 'guest') {
-      const session = sessions.get(ws.code);
-      if (!session) return;
-      session.pending = session.pending.filter(p => p.ws !== ws);
-      session.peers = session.peers.filter(p => p.ws !== ws);
-      send(session.host, { t: 'peers', list: session.peers.map(p => p.name) });
+    } else {
+      session.pending = session.pending.filter((p) => p.ws !== ws);
+      session.peers = session.peers.filter((p) => p.ws !== ws);
+      broadcastPeers(session);
     }
   });
 });

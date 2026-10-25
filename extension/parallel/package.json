@@ -24,7 +24,11 @@
       {
         "command": "parallel.join",
         "title": "Parallel: Join Session"
-      }
+      },
+      {
+  "command": "parallel.changeRole",
+  "title": "Parallel: Change Role"
+}
     ],
     "configuration": {
   "title": "Parallel",

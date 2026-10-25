@@ -12,6 +12,18 @@ const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
 let hostDoc: vscode.TextDocument | undefined;
 let sendTimer: NodeJS.Timeout | undefined;
 
+// Status bar: shows your role and the session code
+const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+
+function updateStatus(code?: string) {
+    if (!session.role) {
+        status.hide();
+        return;
+    }
+    status.text = `$(broadcast) Parallel: ${session.role}` + (code ? ` · ${code}` : '');
+    status.show();
+}
+
 // ---------- sharing the document ----------
 
 // EDITOR: send the current text of the shared file
@@ -69,13 +81,20 @@ async function handleJoinRequest(name: string) {
 export function activate(context: vscode.ExtensionContext) {
 
     // Message handlers. Teammates add their own with onMessage in their own files.
-    onMessage('created', (msg) => { showCode(msg.code); sendDoc(); });
+    onMessage('created', (msg) => {
+        showCode(msg.code);
+        sendDoc();
+        updateStatus(msg.code);
+    });
     onMessage('join_request', (msg) => handleJoinRequest(msg.name));
-    onMessage('joined', () =>
-        vscode.window.showInformationMessage("You're in! The host approved you."));
+    onMessage('joined', () => {
+        vscode.window.showInformationMessage("You're in! The host approved you.");
+        updateStatus();
+    });
     onMessage('denied', () => {
         vscode.window.showWarningMessage('The host denied your request.');
         session.role = undefined;
+        updateStatus();
         resetShared();
         disconnect();
     });
@@ -91,6 +110,7 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('ended', () => {
         vscode.window.showInformationMessage('The host ended the session.');
         session.role = undefined;
+        updateStatus();
         resetShared();
         disconnect();
     });
@@ -101,6 +121,7 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showWarningMessage('Disconnected from the server.');
         }
         session.role = undefined;
+        updateStatus();
         resetShared();
     });
 
@@ -174,7 +195,7 @@ export function activate(context: vscode.ExtensionContext) {
         sendTimer = setTimeout(sendDoc, 100);
     });
 
-    context.subscriptions.push(hello, start, join, provider, watcher);
+    context.subscriptions.push(hello, start, join, provider, watcher, status);
 }
 
 export function deactivate() {

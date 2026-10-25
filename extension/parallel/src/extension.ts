@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
 
 const SCHEME = 'parallel';
+const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
 
 // Read-only view (guests): the text being shown, its file name, and the tab address
 let sharedText = '';
@@ -14,9 +15,13 @@ let hostDoc: vscode.TextDocument | undefined;
 let hostFileName = 'shared.txt';
 let sendTimer: NodeJS.Timeout | undefined;
 let applyingRemote = false; // true while we write someone else's text into our file
+let warnedTooBig = false;   // so the "file too large" warning shows once, not on every keystroke
 
 // Latest list of participants (name and role), from the server's "peers" message
 let lastPeers: { name: string; role: string }[] = [];
+
+// False until the server accepts our create or join; used to leave cleanly on refusal
+let joinedOk = false;
 
 // Remote cursors: name -> position, and one decoration style per person
 const cursors = new Map<string, { line: number; character: number }>();
@@ -61,7 +66,18 @@ function sendDoc() {
     if (!hostDoc) {
         return;
     }
-    send({ t: 'doc', text: hostDoc.getText(), file: hostFileName });
+    const text = hostDoc.getText();
+    // Too big: the server would cut the connection, so refuse to send instead
+    if (Buffer.byteLength(text, 'utf8') > MAX_SHARE_BYTES) {
+        if (!warnedTooBig) {
+            warnedTooBig = true;
+            vscode.window.showWarningMessage(
+                'Parallel: this file is too large to share (over 4 MB). Changes are not being sent.');
+        }
+        return;
+    }
+    warnedTooBig = false;
+    send({ t: 'doc', text, file: hostFileName });
 }
 
 // GUEST: show (or update) the read-only tab
@@ -133,6 +149,9 @@ function resetShared() {
     sharedText = '';
     hostDoc = undefined;
     lastPeers = [];
+    joinedOk = false;
+    warnedTooBig = false;
+    session.name = '';
     clearCursors();
 }
 
@@ -220,12 +239,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Message handlers. Teammates add their own with onMessage in their own files.
     onMessage('created', (msg) => {
+        joinedOk = true;
         showCode(msg.code);
         sendDoc();
         updateStatus(msg.code);
     });
     onMessage('join_request', (msg) => handleJoinRequest(msg.name));
     onMessage('joined', () => {
+        joinedOk = true;
         vscode.window.showInformationMessage("You're in! The host approved you.");
         updateStatus();
     });
@@ -255,6 +276,12 @@ export function activate(context: vscode.ExtensionContext) {
         repaintCursors();
     });
     onMessage('cursor_gone', (msg) => removeCursor(msg.name));
+        onMessage('left', (msg) => {
+        vscode.window.showInformationMessage(
+            msg.pending
+                ? `${msg.name} left before being approved.`
+                : `${msg.name} left the session.`);
+    });
     onMessage('role', (msg) => {
         session.role = msg.role;
         updateStatus();
@@ -273,8 +300,16 @@ export function activate(context: vscode.ExtensionContext) {
         resetShared();
         disconnect();
     });
-    onMessage('error', (msg) =>
-        vscode.window.showWarningMessage('Server: ' + (msg.msg ?? msg.message)));
+    onMessage('error', (msg) => {
+        vscode.window.showWarningMessage('Server: ' + (msg.msg ?? msg.message));
+        if (session.role !== undefined && !joinedOk) {
+            // our create or join was refused (bad code, name taken, expired...): leave cleanly
+            session.role = undefined;
+            updateStatus();
+            resetShared();
+            disconnect();
+        }
+    });
     onMessage('closed', () => {
         if (session.role !== undefined) {
             vscode.window.showWarningMessage('Disconnected from the server.');
@@ -282,14 +317,6 @@ export function activate(context: vscode.ExtensionContext) {
         session.role = undefined;
         updateStatus();
         resetShared();
-    });
-
-    const hello = vscode.commands.registerCommand('parallel.helloWorld', async () => {
-        const name = await vscode.window.showInputBox({ prompt: 'Your name?' });
-        if (!name) {
-            return;
-        }
-        vscode.window.showInformationMessage(`Welcome ${name}, your code is ABC123`);
     });
 
     // SUPERHOST: start a session
@@ -300,9 +327,12 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         const name = await vscode.window.showInputBox({ prompt: 'Your name (host)?' });
-        if (!name) {
+        if (!name || !name.trim()) {
             return;
         }
+        // starting over: forget any earlier session in this window
+        resetShared();
+        session.role = undefined;
         try {
             await connect();
         } catch (err: any) {
@@ -311,9 +341,10 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         session.role = 'superhost';
+        session.name = name.trim().slice(0, 30);
         hostDoc = editor.document;
         hostFileName = baseName(editor.document.fileName);
-        send({ t: 'create', name });
+        send({ t: 'create', name: session.name });
     });
 
     // GUEST: join a session
@@ -327,9 +358,12 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         const name = await vscode.window.showInputBox({ prompt: 'Your name?' });
-        if (!name) {
+        if (!name || !name.trim()) {
             return;
         }
+        // starting over: forget any earlier session in this window
+        resetShared();
+        session.role = undefined;
         try {
             await connect();
         } catch (err: any) {
@@ -338,7 +372,8 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         session.role = 'guest';
-        send({ t: 'join', code: code.trim().toUpperCase(), name });
+        session.name = name.trim().slice(0, 30);
+        send({ t: 'join', code: code.trim().toUpperCase(), name: session.name });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
 
@@ -397,7 +432,7 @@ export function activate(context: vscode.ExtensionContext) {
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
     context.subscriptions.push(
-        hello, start, join, changeRole, provider, watcher,
+        start, join, changeRole, provider, watcher,
         selectionWatcher, visibleWatcher, status);
 }
 

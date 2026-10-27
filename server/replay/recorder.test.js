@@ -2,7 +2,12 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createRecorder, recordSuggestion, recordSuggestionResult } = require('./recorder');
+const {
+  createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
+  getSummary,
+} = require('./recorder');
 
 test('JSON shape v:1 and initialization', () => {
   const rec = createRecorder('ABC123');
@@ -154,4 +159,25 @@ test('recordSuggestion stores masked preview capped at 200 chars and line range'
   assert.equal(resultEvent.type, 'suggest_accepted');
   assert.equal(resultEvent.by, 'HostAlice');
   assert.equal(resultEvent.data.id, 'sug-123');
+});
+
+test('getSummary computes duration, edits, suggested, accepted, rejected, participants', () => {
+  const rec = createRecorder('SUM001');
+  rec.addEvent('session_start', 'Host', {});
+  rec.addEvent('joined', 'Guest1', {});
+  rec.addSnapshot('f.js', 'line 1');
+  rec.addEvent('suggest', 'Guest1', { id: '1' });
+  rec.addEvent('suggest', 'Guest1', { id: '2' });
+  rec.addEvent('suggest_accepted', 'Host', { id: '1' });
+  rec.addEvent('suggest_rejected', 'Host', { id: '2' });
+  rec.finish();
+
+  const summary = getSummary(rec);
+  assert.equal(summary.t, 'summary');
+  assert.ok(summary.duration >= 0);
+  assert.equal(summary.edits, 1);
+  assert.equal(summary.suggested, 2);
+  assert.equal(summary.accepted, 1);
+  assert.equal(summary.rejected, 1);
+  assert.deepEqual(summary.participants, ['Host', 'Guest1']);
 });

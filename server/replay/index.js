@@ -4,6 +4,7 @@ const {
   createRecorder,
   recordSuggestion,
   recordSuggestionResult,
+  getSummary,
 } = require('./recorder');
 
 const {
@@ -18,6 +19,7 @@ module.exports = {
   createRecorder,
   recordSuggestion,
   recordSuggestionResult,
+  getSummary,
   RECORDINGS_DIR,
   ensureDir,
   saveRecording,

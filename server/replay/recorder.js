@@ -233,8 +233,36 @@ function recordSuggestionResult(session, msg, ws) {
   }
 }
 
+function getSummary(recorder) {
+  try {
+    if (!recorder) return null;
+    const data = typeof recorder.toJSON === 'function' ? recorder.toJSON() : recorder;
+    const duration = Math.max(0, (data.endedAt || Date.now()) - (data.startedAt || Date.now()));
+    let suggested = 0;
+    let accepted = 0;
+    let rejected = 0;
+    for (const e of data.events || []) {
+      if (e.type === 'suggest') suggested++;
+      else if (e.type === 'suggest_accepted') accepted++;
+      else if (e.type === 'suggest_rejected') rejected++;
+    }
+    return {
+      t: 'summary',
+      duration,
+      edits: (data.snapshots || []).length,
+      suggested,
+      accepted,
+      rejected,
+      participants: [...(data.participants || [])],
+    };
+  } catch {
+    return null;
+  }
+}
+
 module.exports = {
   createRecorder,
   recordSuggestion,
   recordSuggestionResult,
+  getSummary,
 };

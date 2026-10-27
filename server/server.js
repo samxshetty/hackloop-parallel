@@ -6,6 +6,7 @@ const {
   createRecorder,
   recordSuggestion,
   recordSuggestionResult,
+  getSummary,
   saveRecording,
   getRecording,
 } = require('./replay');
@@ -304,11 +305,15 @@ function cleanup(ws) {
     session.recorder?.addEvent('session_end', ws.name, {});
     session.recorder?.finish();
     const replayId = saveRecording(session.recorder);
-    if (replayId) {
-      for (const w of everyone(session)) {
+    const summary = getSummary(session.recorder);
+    for (const w of everyone(session)) {
+      if (replayId) {
         w.allowedReplays = w.allowedReplays || new Set();
         w.allowedReplays.add(replayId);
         send(w, { t: 'replay_ready', id: replayId });
+      }
+      if (summary) {
+        send(w, summary);
       }
     }
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });

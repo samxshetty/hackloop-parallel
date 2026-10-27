@@ -72,10 +72,26 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       justify-content: space-between;
       align-items: center;
       flex-shrink: 0;
+      gap: 16px;
     }
     .header-title {
       font-weight: 600;
       font-size: 14px;
+    }
+    .summary-card {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .summary-badge {
+      font-size: 11px;
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid var(--border);
+      padding: 3px 8px;
+      border-radius: 4px;
+      color: var(--fg);
+      font-variant-numeric: tabular-nums;
     }
     .main-layout {
       display: flex;
@@ -310,8 +326,16 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
 </head>
 <body>
   <header>
-    <div class="header-title" id="session-title">Session Replay</div>
-    <div id="session-meta"></div>
+    <div>
+      <div class="header-title" id="session-title">Session Replay</div>
+      <div id="session-meta"></div>
+    </div>
+    <div class="summary-card" id="summary-card">
+      <span class="summary-badge" id="sum-duration"></span>
+      <span class="summary-badge" id="sum-edits"></span>
+      <span class="summary-badge" id="sum-suggestions"></span>
+      <span class="summary-badge" id="sum-participants"></span>
+    </div>
   </header>
   <div class="main-layout">
     <div class="code-container">
@@ -396,6 +420,28 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
         timeDisplay.textContent = formatTime(currentTime) + ' / ' + formatTime(totalDuration);
       }
 
+      // Summary Card in Header
+      let countSuggested = 0;
+      let countAccepted = 0;
+      let countRejected = 0;
+      const events = replay.events || [];
+
+      for (let i = 0; i < events.length; i++) {
+        if (events[i].type === 'suggest') countSuggested++;
+        else if (events[i].type === 'suggest_accepted') countAccepted++;
+        else if (events[i].type === 'suggest_rejected') countRejected++;
+      }
+
+      const sumDuration = document.getElementById('sum-duration');
+      const sumEdits = document.getElementById('sum-edits');
+      const sumSuggestions = document.getElementById('sum-suggestions');
+      const sumParticipants = document.getElementById('sum-participants');
+
+      if (sumDuration) sumDuration.textContent = '⏱ ' + formatTime(totalDuration);
+      if (sumEdits) sumEdits.textContent = '📝 ' + (replay.snapshots || []).length + ' edits';
+      if (sumSuggestions) sumSuggestions.textContent = '💡 ' + countAccepted + ' accepted / ' + countRejected + ' rejected (' + countSuggested + ' total)';
+      if (sumParticipants) sumParticipants.textContent = '👥 ' + (replay.participants || []).join(', ');
+
       function renderCode(text, prevText) {
         while (codeView.firstChild) {
           codeView.removeChild(codeView.firstChild);
@@ -440,7 +486,6 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       }
 
       // Build colored tick markers and feed items
-      const events = replay.events || [];
       const feedItems = [];
 
       for (let i = 0; i < events.length; i++) {

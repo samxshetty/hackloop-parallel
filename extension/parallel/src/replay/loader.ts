@@ -66,6 +66,23 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
     }
   });
 
+  // On summary: display session summary card notification
+  onMessage('summary', (msg: any) => {
+    if (!msg || typeof msg !== 'object') {
+      return;
+    }
+    const durationSec = Math.round((msg.duration || 0) / 1000);
+    const mins = Math.floor(durationSec / 60);
+    const secs = durationSec % 60;
+    const durationStr = `${mins}m ${secs}s`;
+    const participantsStr = Array.isArray(msg.participants) && msg.participants.length > 0
+      ? msg.participants.join(', ')
+      : 'None';
+    vscode.window.showInformationMessage(
+      `Session Summary: Duration ${durationStr} · ${msg.edits || 0} edits · Suggestions: ${msg.accepted || 0} accepted, ${msg.rejected || 0} rejected (${msg.suggested || 0} total) · Participants: ${participantsStr}`
+    );
+  });
+
   // On replay: validate shape (v === 1) and open viewer
   onMessage('replay', (msg: any) => {
     if (validateReplay(msg?.data)) {

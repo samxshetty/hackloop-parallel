@@ -37,6 +37,14 @@
       {
         "command": "parallel.showSafetyLog",
         "title": "Parallel: Show Safety Log"
+      },
+      {
+        "command": "parallel.openLastReplay",
+        "title": "Parallel: Open Last Replay"
+      },
+      {
+        "command": "parallel.openReplayFile",
+        "title": "Parallel: Open Replay File"
       }
     ],
     "configuration": {

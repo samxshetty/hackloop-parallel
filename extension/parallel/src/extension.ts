@@ -3,6 +3,7 @@ import { connect, send, onMessage, disconnect, session, isEditor } from './conne
 import { registerSafetyStatus } from './safety/status';
 import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
+import { registerReplayLoader } from './replay/loader';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -242,6 +243,7 @@ export function activate(context: vscode.ExtensionContext) {
     registerSafetyStatus(context);
     registerCreditCommands(context);
     registerSafetyLogger(context);
+    registerReplayLoader(context);
 
     // Message handlers. Teammates add their own with onMessage in their own files.
     onMessage('created', (msg) => {

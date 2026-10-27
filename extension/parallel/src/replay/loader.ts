@@ -1,9 +1,11 @@
 import * as vscode from 'vscode';
 import { onMessage, send } from '../connection';
 import { ReplayData } from './types';
-import { showReplayPanel } from './panel';
+import { showReplayPanel, getLastActiveReplay } from './panel';
+import { renderReplayHtml } from './viewerHtml';
 
 let lastReplayId: string | null = null;
+let lastReplayData: ReplayData | null = null;
 let extContext: vscode.ExtensionContext | null = null;
 
 export function validateReplay(data: any): data is ReplayData {
@@ -86,6 +88,7 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
   // On replay: validate shape (v === 1) and open viewer
   onMessage('replay', (msg: any) => {
     if (validateReplay(msg?.data)) {
+      lastReplayData = msg.data;
       if (extContext) {
         showReplayPanel(extContext, msg.data);
       }
@@ -133,6 +136,7 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
       }
 
       if (replayData && extContext) {
+        lastReplayData = replayData;
         showReplayPanel(extContext, replayData);
       } else {
         vscode.window.showErrorMessage('Invalid replay file format (expected version 1).');
@@ -142,5 +146,44 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
     }
   });
 
-  context.subscriptions.push(openLast, openFile);
+  // Command: Export Replay as HTML
+  const exportHtml = vscode.commands.registerCommand('parallel.exportReplayHtml', async (replay?: ReplayData) => {
+    const replayToExport = replay || getLastActiveReplay() || lastReplayData;
+    if (!replayToExport) {
+      vscode.window.showWarningMessage('No replay data to export. Open or load a replay first.');
+      return;
+    }
+
+    const defaultFileName = `replay-${replayToExport.code || 'session'}-${replayToExport.id.slice(0, 8)}.html`;
+    const defaultUri = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders.length > 0
+      ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, defaultFileName)
+      : vscode.Uri.file(defaultFileName);
+
+    const saveUri = await vscode.window.showSaveDialog({
+      filters: { 'HTML File': ['html'] },
+      defaultUri,
+    });
+
+    if (!saveUri) {
+      return;
+    }
+
+    try {
+      const htmlContent = renderReplayHtml(replayToExport, true);
+      const bytes = new TextEncoder().encode(htmlContent);
+      await vscode.workspace.fs.writeFile(saveUri, bytes);
+
+      const action = await vscode.window.showInformationMessage(
+        `Replay exported to ${saveUri.fsPath}`,
+        'Open in Browser'
+      );
+      if (action === 'Open in Browser') {
+        await vscode.env.openExternal(saveUri);
+      }
+    } catch (err: any) {
+      vscode.window.showErrorMessage(`Failed to export replay: ${err?.message || err}`);
+    }
+  });
+
+  context.subscriptions.push(openLast, openFile, exportHtml);
 }

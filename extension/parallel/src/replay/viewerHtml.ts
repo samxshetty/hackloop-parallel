@@ -367,6 +367,7 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       <label class="toggle-label">
         <input type="checkbox" id="chk-skip-idle"> Skip idle (>5s)
       </label>
+      ${!isStandalone ? '<button id="btn-export" style="margin-left: 8px;">Export HTML</button>' : ''}
       <span class="keyboard-hint">Space: play/pause | ←/→: events | Shift+←/→: 10s</span>
     </div>
   </div>
@@ -377,6 +378,7 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
 
   <script nonce="${nonce}">
     (function () {
+      const vscodeApi = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
       const dataEl = document.getElementById('replay-data');
       if (!dataEl) return;
       const replay = JSON.parse(dataEl.textContent);
@@ -665,6 +667,16 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       if (chkSkipIdle) {
         chkSkipIdle.addEventListener('change', function () {
           skipIdle = chkSkipIdle.checked;
+        });
+      }
+
+      // Export HTML button
+      const btnExport = document.getElementById('btn-export');
+      if (btnExport) {
+        btnExport.addEventListener('click', function () {
+          if (vscodeApi) {
+            vscodeApi.postMessage({ command: 'exportHtml' });
+          }
         });
       }
 

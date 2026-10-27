@@ -45,6 +45,10 @@
       {
         "command": "parallel.openReplayFile",
         "title": "Parallel: Open Replay File"
+      },
+      {
+        "command": "parallel.exportReplayHtml",
+        "title": "Parallel: Export Replay as HTML"
       }
     ],
     "configuration": {

@@ -2,6 +2,7 @@
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
+const { reconcileGuestEdit } = require('./safety/edit-guard');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -195,15 +196,44 @@ function handle(ws, data) {
       if (typeof msg.text !== 'string') break;
       const session = sessions.get(ws.code);
       if (!session) break;
-      session.lastDoc = { t: 'doc', text: msg.text, file: msg.file };
-      const { text: maskedText, count, kinds } = maskSecrets(msg.text);
+
+      const isHostSender = ws.role === 'superhost' || ws.role === 'host';
+      let rawText = msg.text;
+
+      if (!isHostSender) {
+        const res = reconcileGuestEdit(
+          session.lastRaw ?? session.lastDoc?.text ?? '',
+          session.lastMasked ?? '',
+          session.lastSpans ?? [],
+          msg.text
+        );
+        if (!res.ok) {
+          fail(ws, res.error);
+          if (session.lastMasked !== undefined) {
+            send(ws, { t: 'doc', text: session.lastMasked, file: msg.file || session.lastDoc?.file });
+          }
+          break;
+        }
+        rawText = res.rawNew;
+      }
+
+      session.lastRaw = rawText;
+      const { text: maskedText, count, kinds, spans } = maskSecrets(rawText);
+      session.lastMasked = maskedText;
+      session.lastSpans = spans;
+      session.lastDoc = { t: 'doc', text: rawText, file: msg.file };
+
       if (session.lastMaskedCount !== count) {
         session.lastMaskedCount = count;
         send(session.host, { t: 'masked', count, kinds });
       }
+
+      const rawDoc = { ...msg, text: rawText };
       const maskedDoc = { ...msg, text: maskedText };
       for (const w of everyone(session)) {
-        if (w !== ws) send(w, isEditor(w) ? msg : maskedDoc);
+        if (w !== ws) {
+          send(w, (w.role === 'superhost' || w.role === 'host') ? rawDoc : maskedDoc);
+        }
       }
       break;
     }

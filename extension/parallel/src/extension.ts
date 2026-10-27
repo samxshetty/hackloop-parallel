@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as http from 'http';
 import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
 
 const SCHEME = 'parallel';
@@ -262,6 +263,65 @@ async function handleJoinRequest(name: string) {
     }
     send({ t: 'decide', name, approve: pick === 'Approve' });
 }
+
+let voiceServer: http.Server | undefined;
+
+// Generates the HTML layout for the browser voice spike test
+function getVoiceSpikeHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Voice Spike Test</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            padding: 24px;
+            line-height: 1.5;
+        }
+        button {
+            padding: 8px 16px;
+            font-size: 14px;
+            cursor: pointer;
+        }
+        #status {
+            margin-top: 16px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <h2>Microphone Browser Spike Test</h2>
+    <p>Testing audio input (getUserMedia) in the default browser.</p>
+    <button id="test-mic-btn">Test microphone</button>
+    <div id="status">Status: Ready to test microphone.</div>
+
+    <script>
+        const btn = document.getElementById('test-mic-btn');
+        const statusEl = document.getElementById('status');
+
+        btn.addEventListener('click', async () => {
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                statusEl.textContent = 'Error: navigator.mediaDevices.getUserMedia is not supported in this browser.';
+                return;
+            }
+            statusEl.textContent = 'Requesting microphone permission...';
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                statusEl.textContent = 'Microphone works';
+                stream.getTracks().forEach(track => track.stop());
+            } catch (err) {
+                const errorName = err && err.name ? err.name : 'UnknownError';
+                const errorMessage = err && err.message ? err.message : String(err);
+                statusEl.textContent = 'Error [' + errorName + ']: ' + errorMessage;
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
+
 
 // Generates the HTML layout for the microphone test webview panel
 function getMicTestHtml(): string {
@@ -638,6 +698,20 @@ export function activate(context: vscode.ExtensionContext) {
         panel.webview.html = getMicTestHtml();
     });
 
+    const openVoice = vscode.commands.registerCommand('parallel.openVoice', async () => {
+        if (!voiceServer) {
+            voiceServer = http.createServer((req, res) => {
+                res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+                res.end(getVoiceSpikeHtml());
+            });
+            voiceServer.on('error', (err) => {
+                vscode.window.showErrorMessage(`Voice server error: ${err.message}`);
+            });
+            voiceServer.listen(8090, 'localhost');
+        }
+        await vscode.env.openExternal(vscode.Uri.parse('http://localhost:8090'));
+    });
+
     // The read-only "parallel:" files
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
@@ -669,10 +743,12 @@ export function activate(context: vscode.ExtensionContext) {
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, provider, watcher,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, openVoice, provider, watcher,
         selectionWatcher, visibleWatcher, status);
 }
 
 export function deactivate() {
+    voiceServer?.close();
+    voiceServer = undefined;
     disconnect();
 }

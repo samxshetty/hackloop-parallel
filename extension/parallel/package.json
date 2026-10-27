@@ -45,6 +45,10 @@
       {
         "command": "parallel.micTest",
         "title": "Parallel: Test Microphone"
+      },
+      {
+        "command": "parallel.openVoice",
+        "title": "Parallel: Open Voice"
       }
     ],
     "configuration": {

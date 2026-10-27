@@ -29,6 +29,10 @@
       {
         "command": "parallel.changeRole",
         "title": "Parallel: Change Role"
+      },
+      {
+        "command": "parallel.commitWithCredit",
+        "title": "Parallel: Commit With Credit"
       }
     ],
     "configuration": {

@@ -1,12 +1,17 @@
 import * as vscode from 'vscode';
 import { ReplayData } from './types';
+import { renderReplayHtml } from './viewerHtml';
 
 export function showReplayPanel(context: vscode.ExtensionContext, data: ReplayData): void {
   const panel = vscode.window.createWebviewPanel(
     'parallelReplay',
     `Replay: ${data.code} (${data.id})`,
     vscode.ViewColumn.Active,
-    { enableScripts: true }
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+    }
   );
-  panel.webview.html = `<!DOCTYPE html><html><body><h3>Replay ${data.id}</h3></body></html>`;
+
+  panel.webview.html = renderReplayHtml(data, false);
 }

@@ -142,30 +142,32 @@ function isSuggestionMasked(s, text) {
  *
  * @param {string} text - The input text to mask.
  * @param {Array<{name: string, regex: RegExp}>} [customPatterns]
- * @returns {{ text: string, count: number, kinds: string[] }}
+ * @returns {{ text: string, count: number, kinds: string[], spans: Array<{start: number, end: number}> }}
  */
 function maskSecrets(text, customPatterns) {
   if (typeof text !== 'string') {
-    return { text: '', count: 0, kinds: [] };
+    return { text: '', count: 0, kinds: [], spans: [] };
   }
   if (text.length === 0) {
-    return { text: '', count: 0, kinds: [] };
+    return { text: '', count: 0, kinds: [], spans: [] };
   }
 
   try {
     const merged = getMaskedIntervals(text);
     if (merged.length === 0) {
-      return { text, count: 0, kinds: [] };
+      return { text, count: 0, kinds: [], spans: [] };
     }
 
     let out = '';
     let lastIdx = 0;
     const allKinds = new Set();
+    const spans = [];
 
     for (const item of merged) {
       out += text.slice(lastIdx, item.start);
       const secretChunk = text.slice(item.start, item.end);
       out += secretChunk.replace(/[^\r\n]/g, '•');
+      spans.push({ start: item.start, end: item.end });
       lastIdx = item.end;
       for (const k of item.kinds) {
         allKinds.add(k);
@@ -177,12 +179,14 @@ function maskSecrets(text, customPatterns) {
       text: out,
       count: merged.length,
       kinds: Array.from(allKinds),
+      spans,
     };
   } catch (err) {
     return {
       text: typeof text === 'string' ? text : '',
       count: 0,
       kinds: [],
+      spans: [],
     };
   }
 }

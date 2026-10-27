@@ -34,6 +34,10 @@ test('masks AWS access key', () => {
   assert.ok(!res.text.includes(fakeAwsKey));
   assert.ok(res.kinds.includes('AWS Access Key'));
   assert.strictEqual(res.count, 1);
+  assert.deepStrictEqual(res.spans, [{
+    start: input.indexOf(fakeAwsKey),
+    end: input.indexOf(fakeAwsKey) + fakeAwsKey.length,
+  }]);
 });
 
 test('masks OpenAI and Anthropic keys', () => {
@@ -58,6 +62,7 @@ test('masks Stripe live keys', () => {
   assert.ok(!res.text.includes(fakeStripeRk));
   assert.ok(res.kinds.includes('Stripe API Key'));
   assert.strictEqual(res.count, 2);
+  assert.strictEqual(res.spans.length, 2);
 });
 
 test('masks GitHub tokens (ghp and github_pat)', () => {
@@ -143,6 +148,7 @@ test('no false positives on normal code and prose', () => {
   const res = maskSecrets(code);
   assert.strictEqual(res.count, 0);
   assert.strictEqual(res.kinds.length, 0);
+  assert.deepStrictEqual(res.spans, []);
   assert.strictEqual(res.text, code);
 });
 
@@ -153,12 +159,24 @@ test('handles multiple secrets per line', () => {
   assert.strictEqual(res.count, 2);
   assert.ok(!res.text.includes(fakeAwsKey));
   assert.ok(!res.text.includes(fakeStripeKey));
+  assert.strictEqual(res.spans.length, 2);
 });
 
 test('handles empty and non-string inputs safely', () => {
-  assert.deepStrictEqual(maskSecrets(''), { text: '', count: 0, kinds: [] });
-  assert.deepStrictEqual(maskSecrets(null), { text: '', count: 0, kinds: [] });
-  assert.deepStrictEqual(maskSecrets(undefined), { text: '', count: 0, kinds: [] });
+  assert.deepStrictEqual(maskSecrets(''), { text: '', count: 0, kinds: [], spans: [] });
+  assert.deepStrictEqual(maskSecrets(null), { text: '', count: 0, kinds: [], spans: [] });
+  assert.deepStrictEqual(maskSecrets(undefined), { text: '', count: 0, kinds: [], spans: [] });
+});
+
+test('returns accurate spans for masked regions', () => {
+  const line = `const key = "${fakeAwsKey}";\nconst password = "secret12345";`;
+  const res = maskSecrets(line);
+  assert.strictEqual(res.spans.length, 2);
+  for (const span of res.spans) {
+    const maskedSlice = res.text.slice(span.start, span.end);
+    assert.ok(maskedSlice.length > 0);
+    assert.strictEqual(maskedSlice.replace(/[^\r\n•]/g, ''), maskedSlice);
+  }
 });
 
 test('very large input (1 MB under 200 ms)', () => {
@@ -172,6 +190,7 @@ test('very large input (1 MB under 200 ms)', () => {
 
   assert.strictEqual(res.text.length, largeInput.length);
   assert.strictEqual(res.count, 0);
+  assert.deepStrictEqual(res.spans, []);
   assert.ok(duration < 200, `Expected < 200ms, took ${duration.toFixed(2)}ms`);
 });
 

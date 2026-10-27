@@ -10,18 +10,21 @@ let sharedFile = 'shared.txt';
 let sharedUri: vscode.Uri | undefined;
 const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
 
-// Editor side (superhost and promoted hosts): the file being shared
+// Editor side (superhost and promoted hosts/editors): the file being shared
 let hostDoc: vscode.TextDocument | undefined;
 let hostFileName = 'shared.txt';
 let sendTimer: NodeJS.Timeout | undefined;
 let applyingRemote = false; // true while we write someone else's text into our file
 let warnedTooBig = false;   // so the "file too large" warning shows once, not on every keystroke
 
-// Latest list of participants (name and role), from the server's "peers" message
-let lastPeers: { name: string; role: string }[] = [];
+// Latest list of participants (name, role, and canEdit), from the server's "peers" message
+let lastPeers: { name: string; role: string; canEdit?: boolean }[] = [];
 
 // False until the server accepts our create or join; used to leave cleanly on refusal
 let joinedOk = false;
+
+// Track whether this guest has a pending edit request awaiting host response
+let pendingEditRequest = false;
 
 // Remote cursors: name -> position, and one decoration style per person
 const cursors = new Map<string, { line: number; character: number }>();
@@ -36,7 +39,8 @@ function updateStatus(code?: string) {
         status.hide();
         return;
     }
-    status.text = `$(broadcast) Parallel: ${session.role}` + (code ? ` · ${code}` : '');
+    const editSuffix = session.role === 'guest' && session.canEdit ? ' (editor)' : '';
+    status.text = `$(broadcast) Parallel: ${session.role}${editSuffix}` + (code ? ` · ${code}` : '');
     status.show();
 }
 
@@ -95,6 +99,7 @@ async function showSharedDoc(text: string, file: string) {
 
 // EDITOR: write someone else's text into our file, changing only what differs
 async function applyRemote(text: string) {
+    sharedText = text;
     if (!hostDoc) {
         return;
     }
@@ -134,6 +139,11 @@ async function applyRemote(text: string) {
 
 // PROMOTED GUEST: open an editable copy of the shared text and sync from it
 async function becomeEditor() {
+    console.log(`[Parallel:becomeEditor] Opening editable document. Role=${session.role} lines=${sharedText.split('\n').length}`);
+    const active = vscode.window.activeTextEditor;
+    if (active && active.document.uri.scheme === SCHEME) {
+        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+    }
     const doc = await vscode.workspace.openTextDocument({
         content: sharedText,
         language: languageFor(sharedFile),
@@ -141,6 +151,24 @@ async function becomeEditor() {
     hostDoc = doc;
     hostFileName = sharedFile;
     await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+// REVOKED GUEST: close editable document if open and switch back to read-only virtual document
+async function revokeLocalEditor() {
+    const wasEditing = session.canEdit;
+    session.canEdit = false;
+    pendingEditRequest = false;
+    updateStatus();
+    if (wasEditing && session.role !== 'superhost') {
+        const active = vscode.window.activeTextEditor;
+        if (active && hostDoc && active.document === hostDoc) {
+            await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+        }
+        hostDoc = undefined;
+        sharedUri = undefined;
+        await showSharedDoc(sharedText, sharedFile);
+        vscode.window.showInformationMessage('Your edit access has been revoked by the host.');
+    }
 }
 
 // Forget everything about the shared file (session over)
@@ -152,6 +180,8 @@ function resetShared() {
     joinedOk = false;
     warnedTooBig = false;
     session.name = '';
+    session.canEdit = false;
+    pendingEditRequest = false;
     clearCursors();
 }
 
@@ -237,7 +267,7 @@ async function handleJoinRequest(name: string) {
 
 export function activate(context: vscode.ExtensionContext) {
 
-    // Message handlers. Teammates add their own with onMessage in their own files.
+    // Message handlers.
     onMessage('created', (msg) => {
         joinedOk = true;
         showCode(msg.code);
@@ -259,16 +289,16 @@ export function activate(context: vscode.ExtensionContext) {
     });
     onMessage('peers', (msg) => {
         lastPeers = msg.peers ??
-            (msg.list ?? []).map((n: string) => ({ name: n, role: 'guest' }));
+            (msg.list ?? []).map((n: string) => ({ name: n, role: 'guest', canEdit: false }));
         console.log('peers:', lastPeers);
         sendDoc(); // editors re-send so late joiners and demoted people see the file
     });
     onMessage('doc', (msg) => {
-        if (session.role === 'guest') {
+        if (isEditor()) {
+            applyRemote(msg.text).then(repaintCursors); // another editor changed the file
+        } else {
             showSharedDoc(msg.text, msg.file);
             setTimeout(repaintCursors, 100);
-        } else {
-            applyRemote(msg.text).then(repaintCursors); // another editor changed the file
         }
     });
     onMessage('cursor', (msg) => {
@@ -276,21 +306,71 @@ export function activate(context: vscode.ExtensionContext) {
         repaintCursors();
     });
     onMessage('cursor_gone', (msg) => removeCursor(msg.name));
-        onMessage('left', (msg) => {
+
+    // Session host receives edit request from a guest
+    onMessage('edit_request', async (msg) => {
+        if (session.role !== 'superhost') {
+            return;
+        }
+        const pick = await vscode.window.showInformationMessage(
+            msg.name + ' requested edit access.',
+            'Approve',
+            'Reject'
+        );
+        if (!pick) {
+            return;
+        }
+        send({ t: 'decide_edit', name: msg.name, approve: pick === 'Approve' });
+    });
+
+    // Targeted message indicating updated edit permissions
+    onMessage('edit_status', async (msg) => {
+        pendingEditRequest = false;
+        if (msg.canEdit) {
+            session.canEdit = true;
+            updateStatus();
+            await becomeEditor();
+            vscode.window.showInformationMessage('Edit access granted by host.');
+        } else {
+            await revokeLocalEditor();
+        }
+    });
+
+    // Broadcast messages when edit status changes
+    onMessage('edit_granted', (msg) => {
+        if (session.name !== msg.name) {
+            vscode.window.showInformationMessage('Edit access granted to ' + msg.name + '.');
+        }
+    });
+    onMessage('edit_denied', (msg) => {
+        pendingEditRequest = false;
+        session.canEdit = false;
+        updateStatus();
+        if (session.name === msg.name) {
+            vscode.window.showWarningMessage('The host rejected your edit access request.');
+        }
+    });
+    onMessage('edit_revoked', (msg) => {
+        if (session.name !== msg.name) {
+            vscode.window.showInformationMessage('Edit access revoked for ' + msg.name + '.');
+        }
+    });
+
+    onMessage('left', (msg) => {
         vscode.window.showInformationMessage(
             msg.pending
                 ? `${msg.name} left before being approved.`
                 : `${msg.name} left the session.`);
     });
-    onMessage('role', (msg) => {
+    onMessage('role', async (msg) => {
         session.role = msg.role;
         updateStatus();
         vscode.window.showInformationMessage(`You are now a ${msg.role}.`);
         if (msg.role === 'host') {
-            becomeEditor();
+            session.canEdit = true;
+            await becomeEditor();
         } else if (msg.role === 'guest') {
-            hostDoc = undefined;   // stop syncing from our own file
-            sharedUri = undefined; // the next doc reopens the read-only tab
+            await revokeLocalEditor();
         }
     });
     onMessage('ended', () => {
@@ -341,6 +421,7 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         session.role = 'superhost';
+        session.canEdit = true;
         session.name = name.trim().slice(0, 30);
         hostDoc = editor.document;
         hostFileName = baseName(editor.document.fileName);
@@ -372,9 +453,71 @@ export function activate(context: vscode.ExtensionContext) {
             return;
         }
         session.role = 'guest';
+        session.canEdit = false;
         session.name = name.trim().slice(0, 30);
         send({ t: 'join', code: code.trim().toUpperCase(), name: session.name });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
+    });
+
+    // GUEST: request edit access from the host
+    const requestEdit = vscode.commands.registerCommand('parallel.requestEditAccess', async () => {
+        if (!session.role) {
+            vscode.window.showErrorMessage('You are not in a Parallel session.');
+            return;
+        }
+        if (isEditor()) {
+            vscode.window.showInformationMessage('You already have edit access.');
+            return;
+        }
+        if (pendingEditRequest) {
+            vscode.window.showInformationMessage('Edit request already pending approval.');
+            return;
+        }
+        pendingEditRequest = true;
+        send({ t: 'request_edit' });
+        vscode.window.showInformationMessage('Edit access requested from the host. Waiting for approval...');
+    });
+
+    // SUPERHOST: explicitly grant edit access to a guest
+    const grantEdit = vscode.commands.registerCommand('parallel.grantEditAccess', async () => {
+        if (session.role !== 'superhost') {
+            vscode.window.showErrorMessage('Only the superhost can grant edit access.');
+            return;
+        }
+        const guests = lastPeers.filter((p) => !p.canEdit && p.role !== 'superhost');
+        if (guests.length === 0) {
+            vscode.window.showInformationMessage('No guests with read-only access found.');
+            return;
+        }
+        const who = await vscode.window.showQuickPick(
+            guests.map((p) => ({ label: p.name })),
+            { placeHolder: 'Select guest to grant edit access to' }
+        );
+        if (!who) {
+            return;
+        }
+        send({ t: 'decide_edit', name: who.label, approve: true });
+    });
+
+    // SUPERHOST: revoke edit access from a participant who has edit permissions
+    const revokeEdit = vscode.commands.registerCommand('parallel.revokeEditAccess', async () => {
+        if (session.role !== 'superhost') {
+            vscode.window.showErrorMessage('Only the superhost can revoke edit access.');
+            return;
+        }
+        const editors = lastPeers.filter((p) => p.canEdit && p.role !== 'superhost');
+        if (editors.length === 0) {
+            vscode.window.showInformationMessage('No participants currently have edit access.');
+            return;
+        }
+        const who = await vscode.window.showQuickPick(
+            editors.map((p) => ({ label: p.name })),
+            { placeHolder: 'Select editor to revoke edit access from' }
+        );
+        if (!who) {
+            return;
+        }
+        send({ t: 'revoke_edit', name: who.label });
     });
 
     // SUPERHOST: promote or demote someone
@@ -432,7 +575,7 @@ export function activate(context: vscode.ExtensionContext) {
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
     context.subscriptions.push(
-        start, join, changeRole, provider, watcher,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, provider, watcher,
         selectionWatcher, visibleWatcher, status);
 }
 

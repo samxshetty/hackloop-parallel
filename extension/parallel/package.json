@@ -1,7 +1,7 @@
 {
   "name": "parallel",
   "displayName": "Parallel",
-  "description": "Live shared coding sessions with suggestions",
+  "description": "Live shared coding sessions with permission-based live editing",
   "version": "0.0.1",
   "publisher": "team-parallel",
   "repository": {
@@ -29,6 +29,18 @@
       {
         "command": "parallel.changeRole",
         "title": "Parallel: Change Role"
+      },
+      {
+        "command": "parallel.requestEditAccess",
+        "title": "Parallel: Request Edit Access"
+      },
+      {
+        "command": "parallel.grantEditAccess",
+        "title": "Parallel: Grant Edit Access"
+      },
+      {
+        "command": "parallel.revokeEditAccess",
+        "title": "Parallel: Revoke Edit Access"
       }
     ],
     "configuration": {

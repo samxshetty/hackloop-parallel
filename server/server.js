@@ -2,7 +2,13 @@
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
-const { createRecorder, recordSuggestion, recordSuggestionResult } = require('./replay/recorder');
+const {
+  createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
+  saveRecording,
+  getRecording,
+} = require('./replay');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -266,6 +272,26 @@ function handle(ws, data) {
       break;
     }
 
+    case 'replay_get': {
+      const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+      if (!/^[a-f0-9]{12}$/.test(id)) {
+        send(ws, { t: 'error', msg: 'no replay' });
+        break;
+      }
+      const data = getRecording(id);
+      if (!data) {
+        send(ws, { t: 'error', msg: 'no replay' });
+        break;
+      }
+      const isAuthorized = ws.allowedReplays?.has(id) || (ws.name && Array.isArray(data.participants) && data.participants.includes(ws.name));
+      if (!isAuthorized) {
+        send(ws, { t: 'error', msg: 'no replay' });
+        break;
+      }
+      send(ws, { t: 'replay', data });
+      break;
+    }
+
     default:
       fail(ws, 'unknown type');
   }
@@ -277,6 +303,14 @@ function cleanup(ws) {
   if (ws === session.host) {
     session.recorder?.addEvent('session_end', ws.name, {});
     session.recorder?.finish();
+    const replayId = saveRecording(session.recorder);
+    if (replayId) {
+      for (const w of everyone(session)) {
+        w.allowedReplays = w.allowedReplays || new Set();
+        w.allowedReplays.add(replayId);
+        send(w, { t: 'replay_ready', id: replayId });
+      }
+    }
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });
     for (const p of session.pending) send(p.ws, { t: 'ended' });
     sessions.delete(ws.code);

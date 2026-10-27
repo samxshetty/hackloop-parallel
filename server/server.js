@@ -1,7 +1,7 @@
 'use strict';
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
-const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
+const { maskSecrets } = require('./safety/mask');
 const { reconcileGuestEdit } = require('./safety/edit-guard');
 
 const PORT = process.env.PORT || 8080;
@@ -300,32 +300,6 @@ function handle(ws, data) {
       break;
     }
 
-    case 'suggest': {
-      const session = sessions.get(ws.code);
-      if (!session || !isMember(ws, session)) break;
-      const out = { ...msg, from: ws.name };
-      if (isSuggestionMasked(msg, session.lastDoc ? session.lastDoc.text : '')) {
-        out.masked = true;
-      }
-      for (const w of everyone(session)) {
-        if (isEditor(w) && w !== ws) send(w, out);
-      }
-      break;
-    }
-
-    case 'suggest_result': {
-      if (!isEditor(ws)) break;
-      const session = sessions.get(ws.code);
-      if (!session) break;
-      const out = { ...msg, from: ws.name };
-      const maskedOut = typeof out.text === 'string'
-        ? { ...out, text: maskSecrets(out.text).text }
-        : out;
-      for (const w of everyone(session)) {
-        if (w !== ws) send(w, isEditor(w) ? out : maskedOut);
-      }
-      break;
-    }
 
     case 'role': {
       // only the superhost can promote or demote

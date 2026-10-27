@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { ledger } from './ledger';
+import { logSafety } from './log';
 
 interface RepoPickItem extends vscode.QuickPickItem {
     repo: any;
@@ -92,7 +93,9 @@ export function registerCreditCommands(context: vscode.ExtensionContext) {
             });
 
             const email = (emailInput && emailInput.trim()) ? emailInput.trim() : defaultEmail;
-            trailers.push(`Co-authored-by: ${guestName} <${email}>`);
+            const trailer = `Co-authored-by: ${guestName} <${email}>`;
+            trailers.push(trailer);
+            logSafety(`Credit applied: ${trailer}`);
         }
 
         // 6. Prefill repository inputBox

@@ -1,4 +1,5 @@
 import { onMessage } from '../connection';
+import { logSafety } from './log';
 
 export interface CreditRecord {
     guestName: string;
@@ -12,11 +13,9 @@ class CreditLedger {
     private counts: Map<string, number> = new Map();
 
     constructor() {
-        // Automatically clear when session ends or disconnects
         onMessage('ended', () => this.clear());
         onMessage('closed', () => this.clear());
 
-        // Also hook into suggest_result if forwarded
         onMessage('suggest_result', (msg: any) => {
             if (msg && (msg.action === 'accept' || msg.accepted === true || msg.approve === true)) {
                 const name = msg.guestName || msg.from || msg.name;
@@ -32,9 +31,6 @@ class CreditLedger {
         });
     }
 
-    /**
-     * Record an accepted suggestion.
-     */
     public record(record: { guestName: string; timestamp?: number; file?: string; lineRange?: [number, number] }) {
         const guestName = (record.guestName || '').trim();
         if (!guestName) {
@@ -51,6 +47,12 @@ class CreditLedger {
         this.records.push(entry);
         const current = this.counts.get(guestName) || 0;
         this.counts.set(guestName, current + 1);
+
+        try {
+            logSafety(`Suggestion accepted: ${guestName}${entry.file ? ' in ' + entry.file : ''}`);
+        } catch {
+            // ignore if logger not initialized
+        }
     }
 
     public getCounts(): Map<string, number> {
@@ -79,9 +81,6 @@ class CreditLedger {
 
 export const ledger = new CreditLedger();
 
-/**
- * Record a credit for an accepted suggestion with one call.
- */
 export function recordCredit(guestName: string, file?: string, lineRange?: [number, number]) {
     ledger.record({
         guestName,

@@ -33,6 +33,10 @@
       {
         "command": "parallel.commitWithCredit",
         "title": "Parallel: Commit With Credit"
+      },
+      {
+        "command": "parallel.showSafetyLog",
+        "title": "Parallel: Show Safety Log"
       }
     ],
     "configuration": {

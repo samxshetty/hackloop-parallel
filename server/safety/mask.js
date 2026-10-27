@@ -32,8 +32,8 @@ function maskSecrets(text, customPatterns) {
         }
 
         if (p.name === 'Secret Assignment') {
-          // match[4] is quoted value, match[5] is unquoted value
-          const val = match[4] !== undefined ? match[4] : match[5];
+          // match[4] is the quoted value
+          const val = match[4];
           if (val && val.length >= 6) {
             const opIdx = match[0].search(/[=:]/);
             const valOffset = match[0].indexOf(val, opIdx >= 0 ? opIdx : 0);

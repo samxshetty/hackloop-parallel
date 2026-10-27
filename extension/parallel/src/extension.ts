@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
+import { registerSafetyStatus } from './safety/status';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -236,6 +237,7 @@ async function handleJoinRequest(name: string) {
 // ---------- activate ----------
 
 export function activate(context: vscode.ExtensionContext) {
+    registerSafetyStatus(context);
 
     // Message handlers. Teammates add their own with onMessage in their own files.
     onMessage('created', (msg) => {

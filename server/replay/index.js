@@ -1,7 +1,13 @@
 'use strict';
 
-const { createRecorder } = require('./recorder');
+const {
+  createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
+} = require('./recorder');
 
 module.exports = {
   createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
 };

@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createRecorder } = require('./recorder');
+const { createRecorder, recordSuggestion, recordSuggestionResult } = require('./recorder');
 
 test('JSON shape v:1 and initialization', () => {
   const rec = createRecorder('ABC123');
@@ -86,16 +86,11 @@ test('snapshots cap per snapshot (200 KB) and truncation flag', () => {
 test('total snapshots cap (5 MB) stops snapshots but keeps events', () => {
   const rec = createRecorder('CAP5MB');
 
-  // Add chunks of 190 KB up to 5 MB
   const chunkSize = 190 * 1024;
   const chunkText = 'B'.repeat(chunkSize);
 
-  // Force multiple snapshots beyond 5 MB
-  // We can simulate multiple additions by adjusting or adding 28 chunks of 190 KB (~5.3 MB)
   for (let i = 0; i < 30; i++) {
-    // Unique text so it doesn't deduplicate
     const text = chunkText + i;
-    // We call addSnapshot
     rec.addSnapshot(`file_${i}.txt`, text);
   }
 
@@ -104,10 +99,8 @@ test('total snapshots cap (5 MB) stops snapshots but keeps events', () => {
 
   const json = rec.toJSON();
   assert.equal(json.truncated, true);
-  // Total snapshot bytes must be <= 5 MB
   const totalBytes = json.snapshots.reduce((sum, s) => sum + Buffer.byteLength(s.text, 'utf8'), 0);
   assert.ok(totalBytes <= 5 * 1024 * 1024);
-  // Events must still be preserved
   assert.ok(json.events.some((e) => e.type === 'custom_event'));
 });
 
@@ -119,11 +112,46 @@ test('finish is idempotent and does not corrupt state', () => {
   rec.finish();
   const first = rec.toJSON();
 
-  // Call finish again
   rec.finish();
   const second = rec.toJSON();
 
   assert.equal(first.endedAt, second.endedAt);
   assert.equal(first.snapshots.length, second.snapshots.length);
   assert.equal(first.events.length, second.events.length);
+});
+
+test('recordSuggestion stores masked preview capped at 200 chars and line range', () => {
+  const rec = createRecorder('SUG001');
+  const session = { recorder: rec };
+  const ws = { name: 'GuestCharlie' };
+
+  // Fake AWS key: AKIA + 16 chars
+  const fakeKey = 'AKIA' + 'IOSFODNN7EXAMPLE';
+  const longReplacement = `let key = "${fakeKey}"; ` + 'X'.repeat(300);
+
+  recordSuggestion(session, ws, {
+    id: 'sug-123',
+    range: { startLine: 10, endLine: 12 },
+    replacement: longReplacement,
+  });
+
+  recordSuggestionResult(session, { sid: 'sug-123', status: 'accepted' }, { name: 'HostAlice' });
+
+  const json = rec.toJSON();
+  assert.equal(json.events.length, 2);
+
+  const sugEvent = json.events[0];
+  assert.equal(sugEvent.type, 'suggest');
+  assert.equal(sugEvent.by, 'GuestCharlie');
+  assert.equal(sugEvent.data.guest, 'GuestCharlie');
+  assert.equal(sugEvent.data.id, 'sug-123');
+  assert.deepEqual(sugEvent.data.range, { startLine: 10, endLine: 12 });
+  assert.ok(sugEvent.data.preview.length <= 200);
+  assert.ok(!sugEvent.data.preview.includes(fakeKey)); // Must be masked!
+  assert.ok(sugEvent.data.preview.includes('•'));
+
+  const resultEvent = json.events[1];
+  assert.equal(resultEvent.type, 'suggest_accepted');
+  assert.equal(resultEvent.by, 'HostAlice');
+  assert.equal(resultEvent.data.id, 'sug-123');
 });

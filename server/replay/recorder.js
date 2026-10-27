@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('crypto');
+const { maskSecrets } = require('../safety/mask');
 
 const BASE_MIN_GAP_MS = 250;
 const MAX_SNAPSHOT_BYTES = 200 * 1024; // 200 KB
@@ -197,6 +198,43 @@ function createRecorder(code) {
   };
 }
 
+function recordSuggestion(session, ws, msg) {
+  try {
+    if (!session?.recorder || !msg || typeof msg !== 'object') return;
+    const raw = typeof msg.replacement === 'string' ? msg.replacement : (typeof msg.text === 'string' ? msg.text : '');
+    const preview = maskSecrets(raw.slice(0, 200)).text;
+    const range = {
+      startLine: msg.range?.startLine ?? msg.startLine ?? msg.line ?? 0,
+      endLine: msg.range?.endLine ?? msg.endLine ?? msg.line ?? 0,
+    };
+    session.recorder.addEvent('suggest', ws?.name || 'Guest', {
+      guest: ws?.name || 'Guest',
+      id: msg.id || msg.sid || '',
+      range,
+      preview,
+    });
+  } catch {
+    // Never throw
+  }
+}
+
+function recordSuggestionResult(session, msg, ws) {
+  try {
+    if (!session?.recorder || !msg || typeof msg !== 'object') return;
+    const status = msg.status === 'accepted' ? 'suggest_accepted' : (msg.status === 'rejected' ? 'suggest_rejected' : null);
+    if (!status) return;
+    const by = ws?.name || msg.from || 'Host';
+    session.recorder.addEvent(status, by, {
+      id: msg.sid || msg.id || '',
+      status: msg.status,
+    });
+  } catch {
+    // Never throw
+  }
+}
+
 module.exports = {
   createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
 };

@@ -2,7 +2,7 @@
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
-const { createRecorder } = require('./replay/recorder');
+const { createRecorder, recordSuggestion, recordSuggestionResult } = require('./replay/recorder');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -225,6 +225,7 @@ function handle(ws, data) {
       // "from" is set by the server, so nobody can pretend to be someone else.
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
+      recordSuggestion(session, ws, msg);
       const out = { ...msg, from: ws.name };
       if (isSuggestionMasked(msg, session.lastDoc ? session.lastDoc.text : '')) {
         out.masked = true;
@@ -239,6 +240,7 @@ function handle(ws, data) {
       if (!isEditor(ws)) break;
       const session = sessions.get(ws.code);
       if (!session) break;
+      recordSuggestionResult(session, msg, ws);
       const out = { ...msg, from: ws.name };
       const maskedOut = typeof out.text === 'string'
         ? { ...out, text: maskSecrets(out.text).text }

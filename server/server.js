@@ -195,6 +195,7 @@ function handle(ws, data) {
       if (!session) break;
       session.lastDoc = { t: 'doc', text: msg.text, file: msg.file };
       const { text: maskedText, count, kinds } = maskSecrets(msg.text);
+      session.recorder?.addSnapshot(msg.file || 'shared.txt', maskedText);
       if (session.lastMaskedCount !== count) {
         session.lastMaskedCount = count;
         send(session.host, { t: 'masked', count, kinds });

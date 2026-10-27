@@ -127,7 +127,7 @@ function handle(ws, data) {
       const name = cleanName(msg.name);
       if (!name) { fail(ws, 'name required'); break; }
       const code = genCode();
-      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now() });
+      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0 });
       ws.role = 'superhost';
       ws.name = name;
       ws.code = code;
@@ -188,7 +188,12 @@ function handle(ws, data) {
       const session = sessions.get(ws.code);
       if (!session) break;
       session.lastDoc = { t: 'doc', text: msg.text, file: msg.file };
-      const maskedDoc = { ...msg, text: maskSecrets(msg.text).text };
+      const { text: maskedText, count, kinds } = maskSecrets(msg.text);
+      if (session.lastMaskedCount !== count) {
+        session.lastMaskedCount = count;
+        send(session.host, { t: 'masked', count, kinds });
+      }
+      const maskedDoc = { ...msg, text: maskedText };
       for (const w of everyone(session)) {
         if (w !== ws) send(w, isEditor(w) ? msg : maskedDoc);
       }

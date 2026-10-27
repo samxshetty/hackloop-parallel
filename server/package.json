@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test.js",
+    "test:replay": "node --test replay/",
     "test:safety": "node --test safety/",
     "test:e2e-safety": "node test-safety.js"
   },

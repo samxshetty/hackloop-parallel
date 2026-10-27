@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test.js",
-    "test:safety": "node --test safety/"
+    "test:safety": "node --test safety/",
+    "test:e2e-safety": "node test-safety.js"
   },
   "keywords": [],
   "author": "",

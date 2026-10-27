@@ -2,6 +2,7 @@
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
 const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
+const { createRecorder } = require('./replay/recorder');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -127,7 +128,9 @@ function handle(ws, data) {
       const name = cleanName(msg.name);
       if (!name) { fail(ws, 'name required'); break; }
       const code = genCode();
-      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0 });
+      const recorder = createRecorder(code);
+      recorder.addEvent('session_start', name, { role: 'superhost' });
+      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0, recorder });
       ws.role = 'superhost';
       ws.name = name;
       ws.code = code;
@@ -158,6 +161,7 @@ function handle(ws, data) {
       ws.role = 'guest';
       ws.code = code;
       session.pending.push({ ws, name });
+      session.recorder?.addEvent('join_request', name, {});
       send(session.host, { t: 'join_request', name });
       break;
     }
@@ -171,12 +175,14 @@ function handle(ws, data) {
       const [guest] = session.pending.splice(idx, 1);
       if (msg.approve) {
         session.peers.push(guest);
+        session.recorder?.addEvent('joined', guest.name, { role: 'guest' });
         send(guest.ws, { t: 'joined' });
         broadcastPeers(session);
         if (session.lastDoc) {
           send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
         }
       } else {
+        session.recorder?.addEvent('denied', guest.name, {});
         send(guest.ws, { t: 'denied' });
       }
       break;
@@ -251,6 +257,7 @@ function handle(ws, data) {
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
       target.ws.role = msg.role;
+      session.recorder?.addEvent('role_change', ws.name, { target: msg.name, role: msg.role });
       send(target.ws, { t: 'role', role: msg.role });
       broadcastPeers(session);
       break;
@@ -265,6 +272,8 @@ function cleanup(ws) {
   const session = sessions.get(ws.code);
   if (!session) return;
   if (ws === session.host) {
+    session.recorder?.addEvent('session_end', ws.name, {});
+    session.recorder?.finish();
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });
     for (const p of session.pending) send(p.ws, { t: 'ended' });
     sessions.delete(ws.code);

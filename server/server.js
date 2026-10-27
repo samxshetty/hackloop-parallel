@@ -1,7 +1,7 @@
 'use strict';
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
-const { maskSecrets } = require('./safety/mask');
+const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -219,6 +219,9 @@ function handle(ws, data) {
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
       const out = { ...msg, from: ws.name };
+      if (isSuggestionMasked(msg, session.lastDoc ? session.lastDoc.text : '')) {
+        out.masked = true;
+      }
       for (const w of everyone(session)) {
         if (isEditor(w) && w !== ws) send(w, out);
       }

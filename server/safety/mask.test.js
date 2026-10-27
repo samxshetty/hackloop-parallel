@@ -2,7 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { maskSecrets } = require('./mask');
+const { maskSecrets, isSuggestionMasked } = require('./mask');
 
 // Build fake keys from string parts so no real-looking secret is stored in the repo
 const fakeAwsKey = ['AKIA', '1234', '5678', '90AB', 'CDEF'].join('');
@@ -125,7 +125,6 @@ test('masks key-value assignments for password, secret, token, api_key, apikey',
     const res = maskSecrets(c);
     assert.strictEqual(res.text.length, c.length, `Length preserved for: ${c}`);
     assert.ok(res.count > 0, `Detected secret in: ${c}`);
-    // Variable name should not be masked
     assert.ok(!res.text.startsWith('••••'), `Variable name preserved for: ${c}`);
     assert.ok(res.kinds.includes('Secret Assignment'));
   }
@@ -174,4 +173,15 @@ test('very large input (1 MB under 200 ms)', () => {
   assert.strictEqual(res.text.length, largeInput.length);
   assert.strictEqual(res.count, 0);
   assert.ok(duration < 200, `Expected < 200ms, took ${duration.toFixed(2)}ms`);
+});
+
+test('isSuggestionMasked detects overlapping suggestions and ignores non-overlapping', () => {
+  const doc = 'const x = 1;\nconst apiKey = "' + fakeAwsKey + '";\nconst y = 2;';
+  // Overlapping suggestion on line 1
+  assert.strictEqual(isSuggestionMasked({ line: 1, text: 'hack' }, doc), true);
+  // Overlapping suggestion containing bullet characters
+  assert.strictEqual(isSuggestionMasked({ line: 0, text: '••••' }, doc), true);
+  // Non-overlapping suggestion on lines 0 and 2
+  assert.strictEqual(isSuggestionMasked({ line: 0, text: 'const a = 1;' }, doc), false);
+  assert.strictEqual(isSuggestionMasked({ line: 2, text: 'const b = 2;' }, doc), false);
 });

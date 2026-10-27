@@ -221,12 +221,14 @@ function recordSuggestion(session, ws, msg) {
 function recordSuggestionResult(session, msg, ws) {
   try {
     if (!session?.recorder || !msg || typeof msg !== 'object') return;
-    const status = msg.status === 'accepted' ? 'suggest_accepted' : (msg.status === 'rejected' ? 'suggest_rejected' : null);
+    const isAcc = msg.status === 'accepted' || msg.accept === true;
+    const isRej = msg.status === 'rejected' || msg.accept === false;
+    const status = isAcc ? 'suggest_accepted' : (isRej ? 'suggest_rejected' : null);
     if (!status) return;
     const by = ws?.name || msg.from || 'Host';
     session.recorder.addEvent(status, by, {
       id: msg.sid || msg.id || '',
-      status: msg.status,
+      status: isAcc ? 'accepted' : 'rejected',
     });
   } catch {
     // Never throw

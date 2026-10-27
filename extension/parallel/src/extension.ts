@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as http from 'http';
 import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
 
 const SCHEME = 'parallel';
@@ -263,6 +264,124 @@ async function handleJoinRequest(name: string) {
     send({ t: 'decide', name, approve: pick === 'Approve' });
 }
 
+let testServer: http.Server | undefined;
+
+// Generates the HTML layout for testing microphone in a real external browser with OS permissions
+function getExternalBrowserMicHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Parallel - Microphone Test</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 24px;
+            box-sizing: border-box;
+        }
+        .card {
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            border-radius: 8px;
+            padding: 32px;
+            max-width: 520px;
+            width: 100%;
+            text-align: center;
+            box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+        }
+        h2 { margin-top: 0; color: #ffffff; }
+        p { color: #cccccc; line-height: 1.5; font-size: 14px; }
+        button {
+            background-color: #0e639c;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            font-size: 14px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 16px 0;
+            font-weight: 500;
+        }
+        button:hover { background-color: #1177bb; }
+        #status { font-weight: 500; margin: 12px 0; min-height: 24px; font-size: 14px; }
+        .meter-container {
+            width: 100%;
+            height: 16px;
+            background: #333;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-top: 16px;
+            display: none;
+        }
+        .meter-fill {
+            height: 100%;
+            width: 0%;
+            background: #4caf50;
+            transition: width 0.05s ease;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>Microphone Browser Test</h2>
+        <p>Testing microphone access via standard browser permissions where the OS and browser display standard permission prompts.</p>
+        <button id="btn">Test Microphone</button>
+        <div id="status">Click the button above to begin.</div>
+        <div class="meter-container" id="meterContainer">
+            <div class="meter-fill" id="meterFill"></div>
+        </div>
+    </div>
+    <script>
+        const btn = document.getElementById('btn');
+        const statusEl = document.getElementById('status');
+        const meterContainer = document.getElementById('meterContainer');
+        const meterFill = document.getElementById('meterFill');
+
+        btn.addEventListener('click', async () => {
+            statusEl.textContent = 'Requesting microphone permission...';
+            statusEl.style.color = '#d4d4d4';
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                statusEl.textContent = 'Microphone works! Speak to see live input level:';
+                statusEl.style.color = '#4caf50';
+                meterContainer.style.display = 'block';
+
+                const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                const source = audioCtx.createMediaStreamSource(stream);
+                const analyser = audioCtx.createAnalyser();
+                analyser.fftSize = 256;
+                source.connect(analyser);
+
+                const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                function updateMeter() {
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                    const avg = sum / dataArray.length;
+                    const percent = Math.min(100, Math.round((avg / 100) * 100));
+                    meterFill.style.width = percent + '%';
+                    requestAnimationFrame(updateMeter);
+                }
+                updateMeter();
+            } catch (err) {
+                statusEl.textContent = 'Error [' + (err.name || 'Error') + ']: ' + (err.message || String(err));
+                statusEl.style.color = '#f44336';
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
+
 // Generates the HTML layout for the microphone test webview panel
 function getMicTestHtml(): string {
     return `<!DOCTYPE html>
@@ -290,49 +409,149 @@ function getMicTestHtml(): string {
             cursor: pointer;
             border-radius: 2px;
             font-size: 13px;
+            margin-right: 8px;
+            margin-bottom: 8px;
         }
         button:hover {
             background-color: var(--vscode-button-hoverBackground);
+        }
+        .secondary-btn {
+            background-color: var(--vscode-button-secondaryBackground, #3a3d41);
+            color: var(--vscode-button-secondaryForeground, #ffffff);
+        }
+        .secondary-btn:hover {
+            background-color: var(--vscode-button-secondaryHoverBackground, #45494e);
         }
         #status {
             margin-top: 16px;
             font-weight: 500;
         }
+        .meter-container {
+            width: 300px;
+            height: 12px;
+            background: var(--vscode-input-background, #3c3c3c);
+            border-radius: 6px;
+            overflow: hidden;
+            margin-top: 12px;
+            display: none;
+        }
+        .meter-fill {
+            height: 100%;
+            width: 0%;
+            background: #4caf50;
+            transition: width 0.05s ease;
+        }
+        .notice-box {
+            margin-top: 16px;
+            padding: 12px 16px;
+            border-left: 4px solid var(--vscode-editorWarning-foreground, #cca700);
+            background: var(--vscode-textBlockQuote-background, rgba(127, 127, 127, 0.1));
+            display: none;
+        }
+        code {
+            font-family: var(--vscode-editor-font-family, monospace);
+            background: var(--vscode-textCodeBlock-background, rgba(0,0,0,0.25));
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        ol {
+            margin: 8px 0;
+            padding-left: 20px;
+        }
+        li {
+            margin-bottom: 6px;
+        }
     </style>
 </head>
 <body>
     <h2>Microphone Spike Test</h2>
-    <p>Test whether audio input (getUserMedia) works inside a VS Code webview.</p>
-    <button id="test-mic-btn">Test microphone</button>
+    <p>Test whether audio input (getUserMedia) works inside a VS Code webview or via external browser.</p>
+    
+    <div>
+        <button id="test-mic-btn">Test microphone in Webview</button>
+        <button id="open-browser-btn" class="secondary-btn">Test in External Browser</button>
+    </div>
+
     <div id="status">Status: Ready to test microphone.</div>
 
+    <div class="meter-container" id="meterContainer">
+        <div class="meter-fill" id="meterFill"></div>
+    </div>
+
+    <div class="notice-box" id="noticeBox">
+        <strong>Why did "Permission denied" happen in Webview?</strong><br>
+        VS Code webviews run inside a sandboxed Electron iframe that blocks media capture requests by default because VS Code has no native permission dialog.<br><br>
+        <strong>Solutions:</strong>
+        <ol>
+            <li><strong>Test in External Browser:</strong> Click the "Test in External Browser" button above to test with native OS prompts in your default browser.</li>
+            <li><strong>Auto-grant flag:</strong> Launch VS Code with <code>--use-fake-ui-for-media-stream</code> (already configured in <code>.vscode/launch.json</code> for F5 debug) to auto-grant media stream inside webviews.</li>
+        </ol>
+    </div>
+
     <script>
+        const vscode = acquireVsCodeApi();
         const btn = document.getElementById('test-mic-btn');
+        const browserBtn = document.getElementById('open-browser-btn');
         const statusEl = document.getElementById('status');
+        const noticeBox = document.getElementById('noticeBox');
+        const meterContainer = document.getElementById('meterContainer');
+        const meterFill = document.getElementById('meterFill');
+
+        browserBtn.addEventListener('click', () => {
+            vscode.postMessage({ command: 'openExternalBrowser' });
+            statusEl.textContent = 'Opening external browser for microphone test...';
+            statusEl.style.color = 'var(--vscode-foreground)';
+        });
 
         btn.addEventListener('click', async () => {
-            // Check if mediaDevices is supported in this browser context
+            noticeBox.style.display = 'none';
+            meterContainer.style.display = 'none';
+
             if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
                 statusEl.textContent = 'Error: navigator.mediaDevices.getUserMedia is undefined in this environment.';
+                statusEl.style.color = 'var(--vscode-errorForeground, #f44336)';
                 return;
             }
 
             statusEl.textContent = 'Requesting microphone permission...';
+            statusEl.style.color = 'var(--vscode-foreground)';
 
             try {
-                // Request access to microphone audio stream
                 const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                statusEl.textContent = 'Microphone works! Audio stream captured successfully.';
+                statusEl.style.color = '#4caf50';
+                meterContainer.style.display = 'block';
 
-                // Success: report that microphone works
-                statusEl.textContent = 'Microphone works';
+                try {
+                    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                    const source = audioCtx.createMediaStreamSource(stream);
+                    const analyser = audioCtx.createAnalyser();
+                    analyser.fftSize = 256;
+                    source.connect(analyser);
 
-                // Release microphone immediately by stopping all tracks
-                stream.getTracks().forEach(track => track.stop());
+                    const dataArray = new Uint8Array(analyser.frequencyBinCount);
+                    function updateMeter() {
+                        analyser.getByteFrequencyData(dataArray);
+                        let sum = 0;
+                        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+                        const avg = sum / dataArray.length;
+                        const percent = Math.min(100, Math.round((avg / 100) * 100));
+                        meterFill.style.width = percent + '%';
+                        requestAnimationFrame(updateMeter);
+                    }
+                    updateMeter();
+                } catch (e) {
+                    // AudioContext meter fallback
+                }
             } catch (err) {
-                // Failure: display exact error name and message (e.g. NotAllowedError)
                 const errorName = err && err.name ? err.name : 'UnknownError';
                 const errorMessage = err && err.message ? err.message : String(err);
                 statusEl.textContent = 'Error [' + errorName + ']: ' + errorMessage;
+                statusEl.style.color = 'var(--vscode-errorForeground, #f44336)';
+
+                if (errorName === 'NotAllowedError') {
+                    noticeBox.style.display = 'block';
+                }
             }
         });
     </script>
@@ -633,6 +852,34 @@ export function activate(context: vscode.ExtensionContext) {
                 enableScripts: true,   // Crucial: allows JavaScript execution in the webview
             }
         );
+
+        // Listen for messages from the webview (e.g. open in external browser)
+        panel.webview.onDidReceiveMessage(async (message) => {
+            if (message.command === 'openExternalBrowser') {
+                if (!testServer) {
+                    testServer = http.createServer((req, res) => {
+                        res.writeHead(200, { 'Content-Type': 'text/html' });
+                        res.end(getExternalBrowserMicHtml());
+                    });
+                    testServer.listen(0, '127.0.0.1', () => {
+                        const addr = testServer?.address();
+                        const port = typeof addr === 'object' && addr ? addr.port : 8085;
+                        vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}`));
+                    });
+                } else {
+                    const addr = testServer.address();
+                    const port = typeof addr === 'object' && addr ? addr.port : 8085;
+                    vscode.env.openExternal(vscode.Uri.parse(`http://localhost:${port}`));
+                }
+            }
+        });
+
+        panel.onDidDispose(() => {
+            if (testServer) {
+                testServer.close();
+                testServer = undefined;
+            }
+        });
 
         // Set the webview HTML containing the button and status area
         panel.webview.html = getMicTestHtml();

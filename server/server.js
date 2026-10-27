@@ -38,7 +38,8 @@ function genCode() {
   return code;
 }
 
-const isEditor = (ws) => ws.role === 'superhost' || ws.role === 'host';
+const canEdit = (ws) => ws.role === 'superhost' || ws.role === 'host' || !!ws.canEdit;
+const isEditor = canEdit;
 
 // approved members only: the superhost and approved guests
 const isMember = (ws, session) =>
@@ -54,9 +55,13 @@ function sendToAll(session, obj, except) {
   }
 }
 
-// send the participant list (names and roles) to everyone
+// send the participant list (names, roles, and edit permission) to everyone
 function broadcastPeers(session) {
-  const peers = session.peers.map((p) => ({ name: p.name, role: p.ws.role }));
+  const peers = session.peers.map((p) => ({
+    name: p.name,
+    role: p.ws.role,
+    canEdit: !!p.ws.canEdit,
+  }));
   sendToAll(session, { t: 'peers', list: peers.map((p) => p.name), peers });
 }
 
@@ -128,6 +133,7 @@ function handle(ws, data) {
       const code = genCode();
       sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now() });
       ws.role = 'superhost';
+      ws.canEdit = true;
       ws.name = name;
       ws.code = code;
       send(ws, { t: 'created', code });
@@ -155,6 +161,7 @@ function handle(ws, data) {
       if (nameTaken(session, name)) { fail(ws, 'name taken'); break; }
       ws.name = name;
       ws.role = 'guest';
+      ws.canEdit = false;
       ws.code = code;
       session.pending.push({ ws, name });
       send(session.host, { t: 'join_request', name });
@@ -162,13 +169,14 @@ function handle(ws, data) {
     }
 
     case 'decide': {
-      if (!isEditor(ws)) break;
+      if (ws.role !== 'superhost' && ws.role !== 'host') break;
       const session = sessions.get(ws.code);
       if (!session) break;
       const idx = session.pending.findIndex((p) => p.name === msg.name);
       if (idx === -1) { fail(ws, 'that person already left or was already decided'); break; }
       const [guest] = session.pending.splice(idx, 1);
       if (msg.approve) {
+        guest.ws.canEdit = false;
         session.peers.push(guest);
         send(guest.ws, { t: 'joined' });
         broadcastPeers(session);
@@ -179,7 +187,7 @@ function handle(ws, data) {
     }
 
     case 'doc': {
-      if (!isEditor(ws)) { console.log('blocked guest doc'); break; }
+      if (!canEdit(ws)) { console.log('blocked guest doc'); break; }
       if (typeof msg.text !== 'string') break;
       const session = sessions.get(ws.code);
       if (!session) break;
@@ -200,23 +208,52 @@ function handle(ws, data) {
       break;
     }
 
-    case 'suggest': {
-      // approved members only; forwarded to every editor except the sender.
-      // "from" is set by the server, so nobody can pretend to be someone else.
+    case 'request_edit': {
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
-      const out = { ...msg, from: ws.name };
-      for (const w of everyone(session)) {
-        if (isEditor(w) && w !== ws) send(w, out);
+      if (canEdit(ws)) {
+        fail(ws, 'already an editor');
+        break;
+      }
+      send(session.host, { t: 'edit_request', name: ws.name });
+      break;
+    }
+
+    case 'decide_edit': {
+      if (ws.role !== 'superhost') {
+        fail(ws, 'only superhost can decide edit requests');
+        break;
+      }
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      const target = session.peers.find((p) => p.name === msg.name);
+      if (!target) { fail(ws, 'no such person'); break; }
+      if (msg.approve) {
+        target.ws.canEdit = true;
+        send(target.ws, { t: 'edit_status', canEdit: true });
+        sendToAll(session, { t: 'edit_granted', name: target.name });
+        broadcastPeers(session);
+      } else {
+        target.ws.canEdit = false;
+        send(target.ws, { t: 'edit_status', canEdit: false });
+        send(target.ws, { t: 'edit_denied', name: target.name });
       }
       break;
     }
 
-    case 'suggest_result': {
-      if (!isEditor(ws)) break;
+    case 'revoke_edit': {
+      if (ws.role !== 'superhost') {
+        fail(ws, 'only superhost can revoke edit access');
+        break;
+      }
       const session = sessions.get(ws.code);
       if (!session) break;
-      sendToAll(session, { ...msg, from: ws.name }, ws);
+      const target = session.peers.find((p) => p.name === msg.name);
+      if (!target) { fail(ws, 'no such person'); break; }
+      target.ws.canEdit = false;
+      send(target.ws, { t: 'edit_status', canEdit: false });
+      sendToAll(session, { t: 'edit_revoked', name: target.name });
+      broadcastPeers(session);
       break;
     }
 
@@ -229,7 +266,13 @@ function handle(ws, data) {
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
       target.ws.role = msg.role;
+      if (msg.role === 'host') {
+        target.ws.canEdit = true;
+      } else if (msg.role === 'guest') {
+        target.ws.canEdit = false;
+      }
       send(target.ws, { t: 'role', role: msg.role });
+      send(target.ws, { t: 'edit_status', canEdit: !!target.ws.canEdit });
       broadcastPeers(session);
       break;
     }

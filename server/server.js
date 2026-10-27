@@ -1,6 +1,7 @@
 'use strict';
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
+const { maskSecrets } = require('./safety/mask');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -172,6 +173,9 @@ function handle(ws, data) {
         session.peers.push(guest);
         send(guest.ws, { t: 'joined' });
         broadcastPeers(session);
+        if (session.lastDoc) {
+          send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
+        }
       } else {
         send(guest.ws, { t: 'denied' });
       }
@@ -183,7 +187,11 @@ function handle(ws, data) {
       if (typeof msg.text !== 'string') break;
       const session = sessions.get(ws.code);
       if (!session) break;
-      sendToAll(session, msg, ws);
+      session.lastDoc = { t: 'doc', text: msg.text, file: msg.file };
+      const maskedDoc = { ...msg, text: maskSecrets(msg.text).text };
+      for (const w of everyone(session)) {
+        if (w !== ws) send(w, isEditor(w) ? msg : maskedDoc);
+      }
       break;
     }
 
@@ -216,7 +224,13 @@ function handle(ws, data) {
       if (!isEditor(ws)) break;
       const session = sessions.get(ws.code);
       if (!session) break;
-      sendToAll(session, { ...msg, from: ws.name }, ws);
+      const out = { ...msg, from: ws.name };
+      const maskedOut = typeof out.text === 'string'
+        ? { ...out, text: maskSecrets(out.text).text }
+        : out;
+      for (const w of everyone(session)) {
+        if (w !== ws) send(w, isEditor(w) ? out : maskedOut);
+      }
       break;
     }
 

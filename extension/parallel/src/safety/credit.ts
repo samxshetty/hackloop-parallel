@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ledger } from './ledger';
+import { ledger, ContributorCredit } from './ledger';
 import { logSafety } from './log';
 
 interface RepoPickItem extends vscode.QuickPickItem {
@@ -7,7 +7,7 @@ interface RepoPickItem extends vscode.QuickPickItem {
 }
 
 interface GuestPickItem extends vscode.QuickPickItem {
-    guest: { name: string; count: number };
+    guest: ContributorCredit;
 }
 
 function slugify(name: string): string {
@@ -59,17 +59,20 @@ export function registerCreditCommands(context: vscode.ExtensionContext) {
         // 3. Get credited guests
         const credited = ledger.getCreditedGuests();
         if (credited.length === 0) {
-            vscode.window.showInformationMessage('No guests have accepted suggestions to credit yet.');
+            vscode.window.showInformationMessage('No contributors to credit yet.');
             return;
         }
 
-        // 4. QuickPick listing credited guests with accepted counts (can untick)
-        const items: GuestPickItem[] = credited.map((g) => ({
-            label: g.name,
-            description: `${g.count} accepted suggestion${g.count === 1 ? '' : 's'}`,
-            picked: true,
-            guest: g,
-        }));
+        // 4. QuickPick listing credited guests with "N edits, M lines" and "(access revoked)" tag when revoked (can untick)
+        const items: GuestPickItem[] = credited.map((g) => {
+            const revokedTag = g.revoked ? ' (access revoked)' : '';
+            return {
+                label: `${g.name}${revokedTag}`,
+                description: `${g.edits} edit${g.edits === 1 ? '' : 's'}, ${g.lines} line${g.lines === 1 ? '' : 's'}`,
+                picked: true,
+                guest: g,
+            };
+        });
 
         const selected = await vscode.window.showQuickPick<GuestPickItem>(items, {
             canPickMany: true,

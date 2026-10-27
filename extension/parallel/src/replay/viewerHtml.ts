@@ -111,6 +111,13 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       min-height: 19px;
       white-space: pre;
     }
+    @keyframes fadeHighlight {
+      0% { background-color: rgba(76, 175, 80, 0.4); }
+      100% { background-color: transparent; }
+    }
+    .code-line.line-changed {
+      animation: fadeHighlight 1.5s ease-out forwards;
+    }
     .line-number {
       width: 45px;
       padding-right: 12px;
@@ -294,6 +301,11 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       font-size: 12px;
       min-width: 90px;
     }
+    .keyboard-hint {
+      color: var(--line-num);
+      font-size: 11px;
+      margin-left: auto;
+    }
   </style>
 </head>
 <body>
@@ -331,6 +343,7 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       <label class="toggle-label">
         <input type="checkbox" id="chk-skip-idle"> Skip idle (>5s)
       </label>
+      <span class="keyboard-hint">Space: play/pause | ←/→: events | Shift+←/→: 10s</span>
     </div>
   </div>
 
@@ -351,6 +364,7 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
       let playbackSpeed = 1;
       let skipIdle = false;
       let currentSnapshotIndex = -1;
+      let renderedText = null;
 
       const slider = document.getElementById('time-slider');
       const timeDisplay = document.getElementById('time-display');
@@ -382,14 +396,20 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
         timeDisplay.textContent = formatTime(currentTime) + ' / ' + formatTime(totalDuration);
       }
 
-      function renderCode(text) {
+      function renderCode(text, prevText) {
         while (codeView.firstChild) {
           codeView.removeChild(codeView.firstChild);
         }
         const lines = text.split('\\n');
+        const prevLines = typeof prevText === 'string' ? prevText.split('\\n') : null;
+
         for (let i = 0; i < lines.length; i++) {
           const lineEl = document.createElement('div');
           lineEl.className = 'code-line';
+
+          if (prevLines !== null && (i >= prevLines.length || lines[i] !== prevLines[i])) {
+            lineEl.classList.add('line-changed');
+          }
 
           const numEl = document.createElement('div');
           numEl.className = 'line-number';
@@ -403,6 +423,7 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
           lineEl.appendChild(contentEl);
           codeView.appendChild(lineEl);
         }
+        renderedText = text;
       }
 
       function findSnapshotIndex(t) {
@@ -506,16 +527,18 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
 
         const snapIdx = findSnapshotIndex(currentTime);
         if (snapIdx !== currentSnapshotIndex || force) {
+          const prevIdx = currentSnapshotIndex;
           currentSnapshotIndex = snapIdx;
           if (snapIdx >= 0 && replay.snapshots[snapIdx]) {
             const snap = replay.snapshots[snapIdx];
             fileNameEl.textContent = snap.file || 'shared.txt';
             snapshotInfoEl.textContent = 'Snapshot ' + (snapIdx + 1) + '/' + replay.snapshots.length + (snap.truncated ? ' [truncated]' : '');
-            renderCode(snap.text || '');
+            const prevText = prevIdx >= 0 && replay.snapshots[prevIdx] ? replay.snapshots[prevIdx].text : null;
+            renderCode(snap.text || '', prevText);
           } else {
             fileNameEl.textContent = 'shared.txt';
             snapshotInfoEl.textContent = 'No snapshots yet';
-            renderCode('');
+            renderCode('', null);
           }
         }
       }
@@ -599,6 +622,48 @@ export function renderReplayHtml(data: ReplayData, isStandalone = false): string
           skipIdle = chkSkipIdle.checked;
         });
       }
+
+      // Keyboard shortcuts
+      window.addEventListener('keydown', function (e) {
+        if (e.target && e.target.tagName === 'INPUT' && e.target.type !== 'range') return;
+
+        if (e.code === 'Space') {
+          e.preventDefault();
+          if (isPlaying) pause(); else play();
+        } else if (e.code === 'ArrowLeft') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            currentTime = Math.max(0, currentTime - 10000);
+            updateView(false);
+          } else {
+            let targetAt = 0;
+            for (let i = events.length - 1; i >= 0; i--) {
+              if (events[i].at < currentTime - 100) {
+                targetAt = events[i].at;
+                break;
+              }
+            }
+            currentTime = targetAt;
+            updateView(false);
+          }
+        } else if (e.code === 'ArrowRight') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            currentTime = Math.min(totalDuration, currentTime + 10000);
+            updateView(false);
+          } else {
+            let targetAt = totalDuration;
+            for (let i = 0; i < events.length; i++) {
+              if (events[i].at > currentTime + 100) {
+                targetAt = events[i].at;
+                break;
+              }
+            }
+            currentTime = targetAt;
+            updateView(false);
+          }
+        }
+      });
 
       // Initial view
       updateView(true);

@@ -41,6 +41,10 @@
       {
         "command": "parallel.revokeEditAccess",
         "title": "Parallel: Revoke Edit Access"
+      },
+      {
+        "command": "parallel.micTest",
+        "title": "Parallel: Test Microphone"
       }
     ],
     "configuration": {

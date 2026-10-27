@@ -263,6 +263,83 @@ async function handleJoinRequest(name: string) {
     send({ t: 'decide', name, approve: pick === 'Approve' });
 }
 
+// Generates the HTML layout for the microphone test webview panel
+function getMicTestHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microphone Test</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family, sans-serif);
+            padding: 24px;
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            line-height: 1.5;
+        }
+        h2 {
+            margin-top: 0;
+        }
+        button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 2px;
+            font-size: 13px;
+        }
+        button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        #status {
+            margin-top: 16px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <h2>Microphone Spike Test</h2>
+    <p>Test whether audio input (getUserMedia) works inside a VS Code webview.</p>
+    <button id="test-mic-btn">Test microphone</button>
+    <div id="status">Status: Ready to test microphone.</div>
+
+    <script>
+        const btn = document.getElementById('test-mic-btn');
+        const statusEl = document.getElementById('status');
+
+        btn.addEventListener('click', async () => {
+            // Check if mediaDevices is supported in this browser context
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                statusEl.textContent = 'Error: navigator.mediaDevices.getUserMedia is undefined in this environment.';
+                return;
+            }
+
+            statusEl.textContent = 'Requesting microphone permission...';
+
+            try {
+                // Request access to microphone audio stream
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Success: report that microphone works
+                statusEl.textContent = 'Microphone works';
+
+                // Release microphone immediately by stopping all tracks
+                stream.getTracks().forEach(track => track.stop());
+            } catch (err) {
+                // Failure: display exact error name and message (e.g. NotAllowedError)
+                const errorName = err && err.name ? err.name : 'UnknownError';
+                const errorMessage = err && err.message ? err.message : String(err);
+                statusEl.textContent = 'Error [' + errorName + ']: ' + errorMessage;
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
+
 // ---------- activate ----------
 
 export function activate(context: vscode.ExtensionContext) {
@@ -544,6 +621,23 @@ export function activate(context: vscode.ExtensionContext) {
         send({ t: 'role', name: who.label, role });
     });
 
+    // MICROPHONE TEST (Person D spike)
+    // Opens a Webview panel with a button and status area to test getUserMedia
+    const micTest = vscode.commands.registerCommand('parallel.micTest', () => {
+        // Create and show a new webview panel in the editor area
+        const panel = vscode.window.createWebviewPanel(
+            'parallel.micTest',       // Internal identifier for the panel
+            'Microphone Test',         // Title displayed on the tab
+            vscode.ViewColumn.One,     // Column in which to show the panel
+            {
+                enableScripts: true,   // Crucial: allows JavaScript execution in the webview
+            }
+        );
+
+        // Set the webview HTML containing the button and status area
+        panel.webview.html = getMicTestHtml();
+    });
+
     // The read-only "parallel:" files
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
@@ -575,7 +669,7 @@ export function activate(context: vscode.ExtensionContext) {
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, provider, watcher,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, provider, watcher,
         selectionWatcher, visibleWatcher, status);
 }
 

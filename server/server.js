@@ -13,6 +13,8 @@ const MAX_BAD_CODES = 5;              // wrong codes per connection
 const MAX_BAD_CODES_PER_IP = 20;      // wrong codes per IP per minute
 const MAX_MSGS_PER_SEC = 200;         // per connection
 const MAX_PAYLOAD = 5 * 1024 * 1024;  // 5 MB per message (the extension refuses to send files over 4 MB)
+const MAX_TERM_DATA = 64 * 1024;      // terminal output per message
+const MAX_TERM_INPUT = 4096;          // one command line typed by a host
 const HEARTBEAT_MS = 15000;
 
 const wss = new WebSocketServer({ port: PORT, maxPayload: MAX_PAYLOAD });
@@ -27,8 +29,9 @@ function send(ws, obj) {
   if (ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
 
-function fail(ws, text) {
-  send(ws, { t: 'error', msg: text });
+// fatal = true means a create/join was refused, so the client should leave cleanly
+function fail(ws, text, fatal = false) {
+  send(ws, fatal ? { t: 'error', msg: text, fatal: true } : { t: 'error', msg: text });
 }
 
 // 6 characters, no lookalikes (no 0/O, 1/I), from a secure random source
@@ -55,6 +58,13 @@ function everyone(session) {
 function sendToAll(session, obj, except) {
   for (const w of everyone(session)) {
     if (w !== except) send(w, obj);
+  }
+}
+
+// terminal data goes to promoted hosts only, never to guests
+function sendToHosts(session, obj) {
+  for (const p of session.peers) {
+    if (p.ws.role === 'host') send(p.ws, obj);
   }
 }
 
@@ -120,6 +130,9 @@ function handle(ws, data) {
 
   if (msg.t === 'doc') {
     console.log('recv:', { t: 'doc', file: msg.file, length: String(msg.text ?? '').length });
+  } else if (msg.t === 'term_data' || msg.t === 'term_input') {
+    // never write terminal contents (they may hold secrets) to the server log
+    console.log('recv:', { t: msg.t, length: String(msg.data ?? '').length });
   } else {
     console.log('recv:', msg);
   }
@@ -132,10 +145,10 @@ function handle(ws, data) {
     case 'create': {
       if (ws.code) { fail(ws, 'already in a session'); break; }
       const name = cleanName(msg.name);
-      if (!name) { fail(ws, 'name required'); break; }
+      if (!name) { fail(ws, 'name required', true); break; }
       const code = genCode();
       clearSession(code);
-      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0 });
+      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0, term: null });
       ws.role = 'superhost';
       ws.canEdit = true;
       ws.name = name;
@@ -146,23 +159,23 @@ function handle(ws, data) {
 
     case 'join': {
       if (ws.code) { fail(ws, 'already in a session'); break; }
-      if (ipBlocked(ws.ip)) { fail(ws, 'too many attempts, wait a minute'); break; }
+      if (ipBlocked(ws.ip)) { fail(ws, 'too many attempts, wait a minute', true); break; }
       const name = cleanName(msg.name);
-      if (!name) { fail(ws, 'name required'); break; }
+      if (!name) { fail(ws, 'name required', true); break; }
       const code = typeof msg.code === 'string' ? msg.code.trim().toUpperCase() : '';
       const session = sessions.get(code);
       if (!session) {
         if (tooManyBadCodes(ws)) {
-          fail(ws, 'too many wrong codes');
+          fail(ws, 'too many wrong codes', true);
           ws.close();
         } else {
-          fail(ws, 'bad code');
+          fail(ws, 'bad code', true);
         }
         break;
       }
-      if (Date.now() - session.createdAt > CODE_TTL_MS) { fail(ws, 'code expired'); break; }
-      if (session.peers.length + session.pending.length >= MAX_GUESTS) { fail(ws, 'session full'); break; }
-      if (nameTaken(session, name)) { fail(ws, 'name taken'); break; }
+      if (Date.now() - session.createdAt > CODE_TTL_MS) { fail(ws, 'code expired', true); break; }
+      if (session.peers.length + session.pending.length >= MAX_GUESTS) { fail(ws, 'session full', true); break; }
+      if (nameTaken(session, name)) { fail(ws, 'name taken', true); break; }
       ws.name = name;
       ws.role = 'guest';
       ws.canEdit = false;
@@ -173,7 +186,7 @@ function handle(ws, data) {
     }
 
     case 'decide': {
-      if (ws.role !== 'superhost' && ws.role !== 'host') break;
+      if (ws.role !== 'superhost') break; // only the superhost approves or denies joins
       const session = sessions.get(ws.code);
       if (!session) break;
       const idx = session.pending.findIndex((p) => p.name === msg.name);
@@ -182,7 +195,7 @@ function handle(ws, data) {
       if (msg.approve) {
         guest.ws.canEdit = false;
         session.peers.push(guest);
-        send(guest.ws, { t: 'joined' });
+        send(guest.ws, { t: 'joined', masked: session.lastMaskedCount });
         broadcastPeers(session);
         if (session.lastDoc) {
           send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
@@ -303,6 +316,10 @@ function handle(ws, data) {
       if (!session) break;
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
+      if (target.ws.role === 'host') {
+        fail(ws, 'that person is a host: change their role to guest instead');
+        break;
+      }
       target.ws.canEdit = false;
       setRevoked(session, target.name, true, send);
       send(target.ws, { t: 'edit_status', canEdit: false });
@@ -311,6 +328,57 @@ function handle(ws, data) {
       break;
     }
 
+
+    // ----- shared terminal: superhost -> hosts only, never guests -----
+    case 'term_open': {
+      if (ws.role !== 'superhost') { fail(ws, 'only superhost can share a terminal'); break; }
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      session.term = { allowInput: false };
+      sendToHosts(session, { t: 'term_open', allowInput: false });
+      break;
+    }
+
+    case 'term_data': {
+      if (ws.role !== 'superhost') break;
+      const session = sessions.get(ws.code);
+      if (!session || !session.term) break;
+      if (typeof msg.data !== 'string' || msg.data.length > MAX_TERM_DATA) break;
+      sendToHosts(session, { t: 'term_data', data: msg.data });
+      break;
+    }
+
+    case 'term_allow_input': {
+      if (ws.role !== 'superhost') { fail(ws, 'only superhost can switch terminal typing'); break; }
+      const session = sessions.get(ws.code);
+      if (!session || !session.term) break;
+      session.term.allowInput = !!msg.allow;
+      sendToHosts(session, { t: 'term_allow_input', allow: session.term.allowInput });
+      break;
+    }
+
+    case 'term_close': {
+      if (ws.role !== 'superhost') break;
+      const session = sessions.get(ws.code);
+      if (!session || !session.term) break;
+      session.term = null;
+      sendToHosts(session, { t: 'term_close' });
+      break;
+    }
+
+    case 'term_input': {
+      if (ws.role !== 'host') { fail(ws, 'only hosts can type in the shared terminal'); break; }
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!session.term || !session.term.allowInput) {
+        fail(ws, 'typing in the terminal is switched off');
+        break;
+      }
+      if (typeof msg.data !== 'string' || msg.data.length === 0 || msg.data.length > MAX_TERM_INPUT) break;
+      // the name comes from the server, so a host cannot pretend to be someone else
+      send(session.host, { t: 'term_input', name: ws.name, data: msg.data });
+      break;
+    }
 
     case 'role': {
       // only the superhost can promote or demote
@@ -330,6 +398,14 @@ function handle(ws, data) {
       }
       send(target.ws, { t: 'role', role: msg.role });
       send(target.ws, { t: 'edit_status', canEdit: !!target.ws.canEdit });
+      if (session.term) {
+        // a newly promoted host sees the shared terminal; a demoted one loses it
+        if (msg.role === 'host') {
+          send(target.ws, { t: 'term_open', allowInput: session.term.allowInput });
+        } else {
+          send(target.ws, { t: 'term_close' });
+        }
+      }
       broadcastPeers(session);
       break;
     }

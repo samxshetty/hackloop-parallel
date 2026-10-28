@@ -1,6 +1,9 @@
 'use strict';
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
+const { maskSecrets } = require('./safety/mask');
+const { reconcileGuestEdit } = require('./safety/edit-guard');
+const { recordEdit, setRevoked, clearSession } = require('./safety/contributions');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -131,7 +134,8 @@ function handle(ws, data) {
       const name = cleanName(msg.name);
       if (!name) { fail(ws, 'name required'); break; }
       const code = genCode();
-      sessions.set(code, { host: ws, peers: [], pending: [], createdAt: Date.now() });
+      clearSession(code);
+      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0 });
       ws.role = 'superhost';
       ws.canEdit = true;
       ws.name = name;
@@ -180,6 +184,9 @@ function handle(ws, data) {
         session.peers.push(guest);
         send(guest.ws, { t: 'joined' });
         broadcastPeers(session);
+        if (session.lastDoc) {
+          send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
+        }
       } else {
         send(guest.ws, { t: 'denied' });
       }
@@ -191,7 +198,52 @@ function handle(ws, data) {
       if (typeof msg.text !== 'string') break;
       const session = sessions.get(ws.code);
       if (!session) break;
-      sendToAll(session, msg, ws);
+
+      const isHostSender = ws.role === 'superhost' || ws.role === 'host';
+      let rawText = msg.text;
+      let editChange = null;
+
+      if (!isHostSender) {
+        const res = reconcileGuestEdit(
+          session.lastRaw ?? session.lastDoc?.text ?? '',
+          session.lastMasked ?? '',
+          session.lastSpans ?? [],
+          msg.text
+        );
+        if (!res.ok) {
+          fail(ws, res.error);
+          if (session.lastMasked !== undefined) {
+            send(ws, { t: 'doc', text: session.lastMasked, file: msg.file || session.lastDoc?.file });
+          }
+          break;
+        }
+        rawText = res.rawNew;
+        editChange = res.change;
+      }
+
+      const prevRaw = session.lastRaw ?? session.lastDoc?.text ?? '';
+      session.lastRaw = rawText;
+      const { text: maskedText, count, kinds, spans } = maskSecrets(rawText);
+      session.lastMasked = maskedText;
+      session.lastSpans = spans;
+      session.lastDoc = { t: 'doc', text: rawText, file: msg.file };
+
+      if (!isHostSender) {
+        recordEdit(session, ws, prevRaw, rawText, editChange, send);
+      }
+
+      if (session.lastMaskedCount !== count) {
+        session.lastMaskedCount = count;
+        send(session.host, { t: 'masked', count, kinds });
+      }
+
+      const rawDoc = { ...msg, text: rawText };
+      const maskedDoc = { ...msg, text: maskedText };
+      for (const w of everyone(session)) {
+        if (w !== ws) {
+          send(w, (w.role === 'superhost' || w.role === 'host') ? rawDoc : maskedDoc);
+        }
+      }
       break;
     }
 
@@ -230,6 +282,7 @@ function handle(ws, data) {
       if (!target) { fail(ws, 'no such person'); break; }
       if (msg.approve) {
         target.ws.canEdit = true;
+        setRevoked(session, target.name, false, send);
         send(target.ws, { t: 'edit_status', canEdit: true });
         sendToAll(session, { t: 'edit_granted', name: target.name });
         broadcastPeers(session);
@@ -251,11 +304,13 @@ function handle(ws, data) {
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
       target.ws.canEdit = false;
+      setRevoked(session, target.name, true, send);
       send(target.ws, { t: 'edit_status', canEdit: false });
       sendToAll(session, { t: 'edit_revoked', name: target.name });
       broadcastPeers(session);
       break;
     }
+
 
     case 'role': {
       // only the superhost can promote or demote
@@ -268,8 +323,10 @@ function handle(ws, data) {
       target.ws.role = msg.role;
       if (msg.role === 'host') {
         target.ws.canEdit = true;
+        setRevoked(session, target.name, false, send);
       } else if (msg.role === 'guest') {
         target.ws.canEdit = false;
+        setRevoked(session, target.name, true, send);
       }
       send(target.ws, { t: 'role', role: msg.role });
       send(target.ws, { t: 'edit_status', canEdit: !!target.ws.canEdit });
@@ -288,6 +345,7 @@ function cleanup(ws) {
   if (ws === session.host) {
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });
     for (const p of session.pending) send(p.ws, { t: 'ended' });
+    clearSession(ws.code);
     sessions.delete(ws.code);
   } else {
     const wasPeer = session.peers.some((p) => p.ws === ws);

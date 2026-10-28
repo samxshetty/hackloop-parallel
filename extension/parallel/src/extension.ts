@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import { connect, send, onMessage, disconnect, session, isEditor } from './connection';
+import { registerSafetyStatus } from './safety/status';
+import { registerCreditCommands } from './safety/credit';
+import { registerSafetyLogger } from './safety/log';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -343,6 +346,9 @@ function getMicTestHtml(): string {
 // ---------- activate ----------
 
 export function activate(context: vscode.ExtensionContext) {
+    registerSafetyStatus(context);
+    registerCreditCommands(context);
+    registerSafetyLogger(context);
 
     // Message handlers.
     onMessage('created', (msg) => {
@@ -355,6 +361,7 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('joined', () => {
         joinedOk = true;
         vscode.window.showInformationMessage("You're in! The host approved you.");
+        vscode.window.showInformationMessage("Some sensitive values are hidden by the host's safety filter.");
         updateStatus();
     });
     onMessage('denied', () => {

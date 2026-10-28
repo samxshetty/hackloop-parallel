@@ -6,6 +6,7 @@ import { registerSafetyLogger } from './safety/log';
 import { registerReplayLoader } from './replay/loader';
 import { AdminDashboardManager } from './dashboard/panel';
 import { ParticipantsProvider } from './sidebar';
+import { registerTerminal, closeTerminals } from './terminal';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -31,6 +32,9 @@ let joinedOk = false;
 
 // Track whether this guest has a pending edit request awaiting host response
 let pendingEditRequest = false;
+
+// Set while an editable copy is being opened, so one promotion opens only one editor
+let editorOpening: Promise<void> | undefined;
 
 // Remote cursors: name -> position, and one decoration style per person
 const cursors = new Map<string, { line: number; character: number }>();
@@ -146,13 +150,20 @@ async function applyRemote(text: string) {
     }
 }
 
-// PROMOTED GUEST: open an editable copy of the shared text and sync from it
-async function becomeEditor() {
-    console.log(`[Parallel:becomeEditor] Opening editable document. Role=${session.role} lines=${sharedText.split('\n').length}`);
-    const active = vscode.window.activeTextEditor;
-    if (active && active.document.uri.scheme === SCHEME) {
-        await vscode.commands.executeCommand('workbench.action.closeActiveEditor');
+// Close every read-only "parallel:" tab, even when it is not the active one
+async function closeReadOnlyTabs() {
+    const tabs = vscode.window.tabGroups.all
+        .flatMap((g) => g.tabs)
+        .filter((t) => t.input instanceof vscode.TabInputText && t.input.uri.scheme === SCHEME);
+    if (tabs.length > 0) {
+        await vscode.window.tabGroups.close(tabs);
     }
+}
+
+async function openEditableCopy() {
+    console.log(`[Parallel:becomeEditor] Opening editable document. Role=${session.role} lines=${sharedText.split('\n').length}`);
+    await closeReadOnlyTabs();
+    sharedUri = undefined;
     const doc = await vscode.workspace.openTextDocument({
         content: sharedText,
         language: languageFor(sharedFile),
@@ -160,6 +171,21 @@ async function becomeEditor() {
     hostDoc = doc;
     hostFileName = sharedFile;
     await vscode.window.showTextDocument(doc, { preview: false });
+}
+
+// PROMOTED GUEST: open an editable copy of the shared text and sync from it.
+// The server sends both "role" and "edit_status" for one promotion, so this must be safe to call twice.
+async function becomeEditor() {
+    if (hostDoc && !hostDoc.isClosed) {
+        return;
+    }
+    if (editorOpening) {
+        return editorOpening;
+    }
+    editorOpening = openEditableCopy().finally(() => {
+        editorOpening = undefined;
+    });
+    return editorOpening;
 }
 
 // REVOKED GUEST: close editable document if open and switch back to read-only virtual document
@@ -182,6 +208,7 @@ async function revokeLocalEditor() {
 
 // Forget everything about the shared file (session over)
 function resetShared() {
+    closeTerminals();
     sharedUri = undefined;
     sharedText = '';
     hostDoc = undefined;
@@ -367,10 +394,12 @@ export function activate(context: vscode.ExtensionContext) {
         updateStatus(msg.code);
     });
     onMessage('join_request', (msg) => handleJoinRequest(msg.name));
-    onMessage('joined', () => {
+    onMessage('joined', (msg) => {
         joinedOk = true;
         vscode.window.showInformationMessage("You're in! The host approved you.");
-        vscode.window.showInformationMessage("Some sensitive values are hidden by the host's safety filter.");
+        if (typeof msg.masked === 'number' && msg.masked > 0) {
+            vscode.window.showInformationMessage("Some sensitive values are hidden by the host's safety filter.");
+        }
         updateStatus();
     });
     onMessage('denied', () => {
@@ -476,8 +505,9 @@ export function activate(context: vscode.ExtensionContext) {
     });
     onMessage('error', (msg) => {
         vscode.window.showWarningMessage('Server: ' + (msg.msg ?? msg.message));
-        if (session.role !== undefined && !joinedOk) {
-            // our create or join was refused (bad code, name taken, expired...): leave cleanly
+        if (msg.fatal && session.role !== undefined && !joinedOk) {
+            // our create or join was refused (bad code, name taken, expired...): leave cleanly.
+            // Other errors (even while we wait for approval) must not kick us out.
             session.role = undefined;
             updateStatus();
             resetShared();
@@ -599,7 +629,8 @@ export function activate(context: vscode.ExtensionContext) {
             vscode.window.showErrorMessage('Only the superhost can revoke edit access.');
             return;
         }
-        const editors = lastPeers.filter((p) => p.canEdit && p.role !== 'superhost');
+        // hosts are demoted with Change Role, so only guests with edit access are listed here
+        const editors = lastPeers.filter((p) => p.canEdit && p.role === 'guest');
         if (editors.length === 0) {
             vscode.window.showInformationMessage('No participants currently have edit access.');
             return;
@@ -733,12 +764,14 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
+    const terminalDisposables = registerTerminal();
 
     context.subscriptions.push(
         start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, jumpToPerson, openDashboard, provider,
-        watcher, selectionWatcher, visibleWatcher, status, participantsView);
+        watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 
 export function deactivate() {
+    closeTerminals();
     disconnect();
 }

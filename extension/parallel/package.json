@@ -4,6 +4,7 @@
   "description": "Live shared coding sessions with permission-based live editing",
   "version": "0.0.1",
   "publisher": "team-parallel",
+  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/samxshetty/hackloop-parallel"
@@ -71,10 +72,6 @@
         "title": "Parallel: Open Hackathon Mode"
       },
       {
-        "command": "parallel.micTest",
-        "title": "Parallel: Test Microphone"
-      },
-      {
         "command": "parallel.jumpToPerson",
         "title": "Parallel: Jump to Person"
       },
@@ -104,7 +101,10 @@
       "parallel": [
         {
           "id": "parallel.participants",
-          "name": "Participants"
+          "name": "Participants",
+          "icon": "media/icon.svg",
+          "type": "tree",
+          "contextualTitle": "Parallel"
         }
       ]
     },

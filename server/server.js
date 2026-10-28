@@ -10,6 +10,7 @@ const {
   saveRecording,
   getRecording,
   getLatestRecording,
+  listRecordings,
   RECORDINGS_DIR,
 } = require('./replay');
 
@@ -368,6 +369,16 @@ function handle(ws, data) {
         }
       }
       send(ws, { t: 'replay', data });
+      break;
+    }
+
+    case 'replay_list': {
+      const requesterName = ws.name || (typeof msg.name === 'string' ? msg.name.trim() : '');
+      const recordings = listRecordings(RECORDINGS_DIR, (rec) => {
+        return ws.allowedReplays?.has(rec.id) ||
+          (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+      });
+      send(ws, { t: 'replay_list', recordings });
       break;
     }
 

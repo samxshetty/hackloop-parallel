@@ -13,6 +13,7 @@ const {
   saveRecording,
   getRecording,
   getLatestRecording,
+  listRecordings,
   pruneRecordings,
 } = require('./storage');
 
@@ -26,5 +27,6 @@ module.exports = {
   saveRecording,
   getRecording,
   getLatestRecording,
+  listRecordings,
   pruneRecordings,
 };

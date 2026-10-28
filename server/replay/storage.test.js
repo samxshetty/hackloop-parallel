@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { saveRecording, getRecording, getLatestRecording, pruneRecordings } = require('./storage');
+const { saveRecording, getRecording, getLatestRecording, listRecordings, pruneRecordings } = require('./storage');
 const { createRecorder } = require('./recorder');
 
 test('saves recording and retrieves by valid 12-char hex id', () => {
@@ -105,4 +105,39 @@ test('getLatestRecording finds most recent valid recording and skips empty or ma
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+test('listRecordings returns summaries of valid files, filters by participant, and ignores corrupted files', () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'replay-test-'));
+  try {
+    const rec1 = createRecorder('CODE01');
+    rec1.addEvent('session_start', 'Host1', {});
+    rec1.addSnapshot('a.txt', 'hello');
+    rec1.finish();
+    const id1 = saveRecording(rec1, tmpDir);
+
+    const rec2 = createRecorder('CODE02');
+    rec2.addEvent('session_start', 'Host2', {});
+    rec2.finish();
+    const id2 = saveRecording(rec2, tmpDir);
+
+    // Corrupted file
+    fs.writeFileSync(path.join(tmpDir, 'cccccccccccc.json'), 'bad json', 'utf8');
+
+    const all = listRecordings(tmpDir);
+    assert.equal(all.length, 2);
+    assert.equal(all[0].id, id2);
+    assert.equal(all[1].id, id1);
+    assert.equal(all[1].snapshotCount, 1);
+
+    const host1Only = listRecordings(tmpDir, (data) => data.participants?.includes('Host1'));
+    assert.equal(host1Only.length, 1);
+    assert.equal(host1Only[0].id, id1);
+
+    const nobody = listRecordings(tmpDir, (data) => data.participants?.includes('Nobody'));
+    assert.equal(nobody.length, 0);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
 

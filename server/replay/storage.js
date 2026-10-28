@@ -121,11 +121,61 @@ function getLatestRecording(dir = RECORDINGS_DIR, filterFn = null) {
   }
 }
 
+function listRecordings(dir = RECORDINGS_DIR, filterFn = null) {
+  try {
+    if (!fs.existsSync(dir)) return [];
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json') && /^[a-f0-9]{12}\.json$/.test(f))
+      .map((f) => {
+        const full = path.join(dir, f);
+        try {
+          const stat = fs.statSync(full);
+          return { name: f, full, mtime: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+
+    const summaries = [];
+    for (const file of files) {
+      try {
+        const content = fs.readFileSync(file.full, 'utf8');
+        if (!content || !content.trim()) continue;
+        const data = JSON.parse(content);
+        if (data && data.v === 1 && typeof data.id === 'string' && /^[a-f0-9]{12}$/.test(data.id)) {
+          if (!filterFn || filterFn(data)) {
+            const startedAt = typeof data.startedAt === 'number' ? data.startedAt : file.mtime;
+            const endedAt = typeof data.endedAt === 'number' ? data.endedAt : file.mtime;
+            summaries.push({
+              id: data.id,
+              code: typeof data.code === 'string' ? data.code : 'UNKNOWN',
+              startedAt,
+              endedAt,
+              duration: Math.max(0, endedAt - startedAt),
+              participants: Array.isArray(data.participants) ? [...data.participants] : [],
+              eventCount: Array.isArray(data.events) ? data.events.length : 0,
+              snapshotCount: Array.isArray(data.snapshots) ? data.snapshots.length : 0,
+            });
+          }
+        }
+      } catch {
+        continue;
+      }
+    }
+    return summaries;
+  } catch {
+    return [];
+  }
+}
+
 module.exports = {
   RECORDINGS_DIR,
   ensureDir,
   saveRecording,
   getRecording,
   getLatestRecording,
+  listRecordings,
   pruneRecordings,
 };

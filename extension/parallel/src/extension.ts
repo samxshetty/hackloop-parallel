@@ -4,6 +4,7 @@ import { registerSafetyStatus } from './safety/status';
 import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
 import { registerReplayLoader } from './replay/loader';
+import { AdminDashboardManager } from './dashboard/panel';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -274,6 +275,7 @@ export function activate(context: vscode.ExtensionContext) {
     registerCreditCommands(context);
     registerSafetyLogger(context);
     registerReplayLoader(context);
+    AdminDashboardManager.getInstance().init(context);
 
     // Message handlers. Teammates add their own with onMessage in their own files.
     onMessage('created', (msg) => {
@@ -583,8 +585,13 @@ export function activate(context: vscode.ExtensionContext) {
     // Redraw remote cursors when tabs open, close or move
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
+    // ADMIN DASHBOARD: open dashboard webview
+    const openDashboard = vscode.commands.registerCommand('parallel.openAdminDashboard', () => {
+        AdminDashboardManager.getInstance().open(context);
+    });
+
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, provider, watcher,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, openDashboard, provider, watcher,
         selectionWatcher, visibleWatcher, status);
 }
 

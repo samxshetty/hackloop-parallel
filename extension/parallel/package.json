@@ -61,6 +61,10 @@
       {
         "command": "parallel.exportReplayHtml",
         "title": "Parallel: Export Replay as HTML"
+      },
+      {
+        "command": "parallel.openAdminDashboard",
+        "title": "Parallel: Open Admin Dashboard"
       }
     ],
     "configuration": {

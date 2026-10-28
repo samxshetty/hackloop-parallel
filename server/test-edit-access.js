@@ -21,9 +21,11 @@
  * 14. Outsider cannot request edit or send doc.
  */
 
+const { spawn } = require('node:child_process');
 const WebSocket = require('ws');
 
-const SERVER_URL = 'ws://localhost:8080';
+const PORT = process.env.PORT || 8097;
+const SERVER_URL = `ws://127.0.0.1:${PORT}`;
 let pass = true;
 const errors = [];
 
@@ -98,11 +100,40 @@ function createClient() {
     });
 }
 
+async function startServerIfNeeded() {
+    try {
+        const client = await createClient();
+        client.close();
+        return null;
+    } catch {
+        const child = spawn(process.execPath, ['server.js'], {
+            cwd: __dirname,
+            env: { ...process.env, PORT: String(PORT) },
+            stdio: ['ignore', 'ignore', 'inherit'],
+        });
+
+        for (let i = 0; i < 40; i++) {
+            await new Promise((r) => setTimeout(r, 100));
+            try {
+                const client = await createClient();
+                client.close();
+                return child;
+            } catch {
+                // waiting
+            }
+        }
+        throw new Error('Server failed to start on port ' + PORT);
+    }
+}
+
 async function run() {
     console.log('--- Starting Permission-Based Live Editing Protocol Tests ---');
+    let serverProcess = null;
+    try {
+        serverProcess = await startServerIfNeeded();
 
-    const host = await createClient();
-    const guest = await createClient();
+        const host = await createClient();
+        const guest = await createClient();
 
     // 1. Create session and join
     host.send({ t: 'create', name: 'HostBob' });
@@ -257,6 +288,11 @@ async function run() {
     host.close();
     guest.close();
     outsider.close();
+    } finally {
+        if (serverProcess) {
+            serverProcess.kill();
+        }
+    }
 
     console.log('');
     if (errors.length) {

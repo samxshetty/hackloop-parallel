@@ -1,10 +1,40 @@
 'use strict';
 // End-to-end test for the shared terminal and the permission fixes.
 // Start the server first (npm start), then run: node test-terminal.js
+const { spawn } = require('child_process');
 const WebSocket = require('ws');
 const assert = require('assert');
 
-const URL = process.env.URL || 'ws://localhost:8080';
+const URL = process.env.URL || 'ws://127.0.0.1:8080';
+
+async function startServerIfNeeded() {
+  try {
+    const ws = new WebSocket(URL);
+    await new Promise((resolve, reject) => {
+      ws.on('open', () => { ws.close(); resolve(); });
+      ws.on('error', reject);
+    });
+    return null;
+  } catch {
+    const child = spawn(process.execPath, ['server.js'], {
+      cwd: __dirname,
+      env: { ...process.env, PORT: '8080' },
+      stdio: 'ignore',
+    });
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 100));
+      try {
+        const ws = new WebSocket(URL);
+        await new Promise((resolve, reject) => {
+          ws.on('open', () => { ws.close(); resolve(); });
+          ws.on('error', reject);
+        });
+        return child;
+      } catch {}
+    }
+    throw new Error('Server failed to start on ' + URL);
+  }
+}
 
 function client() {
   const ws = new WebSocket(URL);
@@ -42,6 +72,7 @@ function client() {
 }
 
 async function main() {
+  const serverProcess = await startServerIfNeeded();
   const host = client(), alice = client(), bob = client(), carol = client();
   await Promise.all([host.open(), alice.open(), bob.open(), carol.open()]);
 
@@ -145,8 +176,9 @@ async function main() {
   assert.strictEqual((await carol.next('error')).fatal, undefined);
   console.log('PASS 13: ordinary errors are not fatal');
 
-  console.log('\n✓ ALL TERMINAL AND PERMISSION TESTS PASS');
+    console.log('\n✓ ALL TERMINAL AND PERMISSION TESTS PASS');
   for (const c of [host, alice, bob, carol, x, y]) c.ws.close();
+  if (serverProcess) serverProcess.kill();
   process.exit(0);
 }
 

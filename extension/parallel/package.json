@@ -31,14 +31,6 @@
         "title": "Parallel: Change Role"
       },
       {
-        "command": "parallel.commitWithCredit",
-        "title": "Parallel: Commit With Credit"
-      },
-      {
-        "command": "parallel.showSafetyLog",
-        "title": "Parallel: Show Safety Log"
-      },
-      {
         "command": "parallel.requestEditAccess",
         "title": "Parallel: Request Edit Access"
       },
@@ -49,6 +41,30 @@
       {
         "command": "parallel.revokeEditAccess",
         "title": "Parallel: Revoke Edit Access"
+      },
+      {
+        "command": "parallel.commitWithCredit",
+        "title": "Parallel: Commit With Credit"
+      },
+      {
+        "command": "parallel.showSafetyLog",
+        "title": "Parallel: Show Safety Log"
+      },
+      {
+        "command": "parallel.openLastReplay",
+        "title": "Parallel: Open Last Replay"
+      },
+      {
+        "command": "parallel.openReplayFile",
+        "title": "Parallel: Open Replay File"
+      },
+      {
+        "command": "parallel.exportReplayHtml",
+        "title": "Parallel: Export Replay as HTML"
+      },
+      {
+        "command": "parallel.openAdminDashboard",
+        "title": "Parallel: Open Admin Dashboard"
       },
       {
         "command": "parallel.micTest",

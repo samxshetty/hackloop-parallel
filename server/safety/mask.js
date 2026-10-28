@@ -117,7 +117,83 @@ function maskSecrets(text, customPatterns) {
   }
 }
 
+/**
+ * Converts character offset to 0-based line and character position.
+ */
+function offsetToPos(text, offset) {
+  let line = 0;
+  let lastLineStart = 0;
+  for (let i = 0; i < offset && i < text.length; i++) {
+    if (text[i] === '\n') {
+      line++;
+      lastLineStart = i + 1;
+    }
+  }
+  return { line, character: offset - lastLineStart };
+}
+
+/**
+ * Checks whether a suggestion's range or content overlaps a masked region.
+ * @param {object} s - Suggestion message
+ * @param {string} text - Host document text
+ * @returns {boolean}
+ */
+function isSuggestionMasked(s, text) {
+  if (!s || typeof s !== 'object') return false;
+
+  // If the suggestion itself contains bullets, it came from a masked view
+  const str = JSON.stringify(s);
+  if (str.includes('\u2022')) return true;
+
+  if (typeof text !== 'string' || text.length === 0) return false;
+  const intervals = getMaskedIntervals(text);
+  if (intervals.length === 0) return false;
+
+  // Check offset-based ranges if present
+  if (typeof s.offset === 'number' || typeof s.start === 'number') {
+    const start = s.offset ?? s.start;
+    const length = s.length ?? (typeof s.text === 'string' ? s.text.length : 1);
+    const end = s.end ?? (start + length);
+    for (const iv of intervals) {
+      if (start < iv.end && end > iv.start) return true;
+    }
+  }
+
+  // Check line/character coordinates
+  const range = s.range || s;
+  const sStartLine = range.startLine ?? range.start?.line ?? s.line;
+  const sEndLine = range.endLine ?? range.end?.line ?? sStartLine;
+  const hasCharPos = (range.startCharacter !== undefined || range.startChar !== undefined || range.start?.character !== undefined || s.character !== undefined);
+  const sStartChar = range.startCharacter ?? range.startChar ?? range.start?.character ?? s.character ?? 0;
+  const sEndChar = range.endCharacter ?? range.endChar ?? range.end?.character ?? (sEndLine === sStartLine ? sStartChar + (typeof s.text === 'string' ? s.text.length : 1) : 0);
+
+  if (typeof sStartLine === 'number') {
+    for (const iv of intervals) {
+      const mStart = offsetToPos(text, iv.start);
+      const mEnd = offsetToPos(text, iv.end);
+
+      // Line range completely disjoint
+      if (sEndLine < mStart.line || sStartLine > mEnd.line) continue;
+
+      // If column coordinates were not specified, any match on this line overlaps
+      if (!hasCharPos) return true;
+
+      // Same line with character coordinates specified
+      if (sStartLine === mStart.line && sEndLine === mEnd.line) {
+        if (sStartChar < mEnd.character && sEndChar > mStart.character) return true;
+      } else {
+        // Multi-line overlap
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 module.exports = {
   maskSecrets,
   getMaskedIntervals,
+  isSuggestionMasked,
 };
+

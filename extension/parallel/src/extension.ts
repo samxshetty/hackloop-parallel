@@ -3,6 +3,8 @@ import { connect, send, onMessage, disconnect, session, isEditor } from './conne
 import { registerSafetyStatus } from './safety/status';
 import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
+import { registerReplayLoader } from './replay/loader';
+import { AdminDashboardManager } from './dashboard/panel';
 import { ParticipantsProvider } from './sidebar';
 import { registerTerminal, closeTerminals } from './terminal';
 
@@ -381,6 +383,8 @@ export function activate(context: vscode.ExtensionContext) {
     registerSafetyStatus(context);
     registerCreditCommands(context);
     registerSafetyLogger(context);
+    registerReplayLoader(context);
+    AdminDashboardManager.getInstance().init(context);
 
     // Message handlers.
     onMessage('created', (msg) => {
@@ -754,11 +758,16 @@ export function activate(context: vscode.ExtensionContext) {
     // Redraw remote cursors when tabs open, close or move
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
+    // ADMIN DASHBOARD: open dashboard webview
+    const openDashboard = vscode.commands.registerCommand('parallel.openAdminDashboard', () => {
+        AdminDashboardManager.getInstance().open(context);
+    });
+
     const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
     const terminalDisposables = registerTerminal();
 
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, jumpToPerson, provider,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, jumpToPerson, openDashboard, provider,
         watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 

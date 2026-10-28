@@ -1,9 +1,20 @@
 'use strict';
 const { WebSocketServer } = require('ws');
 const crypto = require('crypto');
-const { maskSecrets } = require('./safety/mask');
+const { maskSecrets, isSuggestionMasked } = require('./safety/mask');
 const { reconcileGuestEdit } = require('./safety/edit-guard');
 const { recordEdit, setRevoked, clearSession } = require('./safety/contributions');
+const {
+  createRecorder,
+  recordSuggestion,
+  recordSuggestionResult,
+  getSummary,
+  saveRecording,
+  getRecording,
+  getLatestRecording,
+  listRecordings,
+  RECORDINGS_DIR,
+} = require('./replay');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -130,9 +141,6 @@ function handle(ws, data) {
 
   if (msg.t === 'doc') {
     console.log('recv:', { t: 'doc', file: msg.file, length: String(msg.text ?? '').length });
-  } else if (msg.t === 'term_data' || msg.t === 'term_input') {
-    // never write terminal contents (they may hold secrets) to the server log
-    console.log('recv:', { t: msg.t, length: String(msg.data ?? '').length });
   } else {
     console.log('recv:', msg);
   }
@@ -148,7 +156,9 @@ function handle(ws, data) {
       if (!name) { fail(ws, 'name required', true); break; }
       const code = genCode();
       clearSession(code);
-      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0, term: null });
+      const recorder = createRecorder(code);
+      recorder.addEvent('session_start', name, { role: 'superhost' });
+      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0, recorder, term: null });
       ws.role = 'superhost';
       ws.canEdit = true;
       ws.name = name;
@@ -181,12 +191,13 @@ function handle(ws, data) {
       ws.canEdit = false;
       ws.code = code;
       session.pending.push({ ws, name });
+      session.recorder?.addEvent('join_request', name, {});
       send(session.host, { t: 'join_request', name });
       break;
     }
 
     case 'decide': {
-      if (ws.role !== 'superhost') break; // only the superhost approves or denies joins
+      if (ws.role !== 'superhost') break;
       const session = sessions.get(ws.code);
       if (!session) break;
       const idx = session.pending.findIndex((p) => p.name === msg.name);
@@ -195,12 +206,14 @@ function handle(ws, data) {
       if (msg.approve) {
         guest.ws.canEdit = false;
         session.peers.push(guest);
-        send(guest.ws, { t: 'joined', masked: session.lastMaskedCount });
+        session.recorder?.addEvent('joined', guest.name, { role: 'guest' });
+        send(guest.ws, { t: 'joined', masked: session.lastMaskedCount || 0 });
         broadcastPeers(session);
         if (session.lastDoc) {
           send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
         }
       } else {
+        session.recorder?.addEvent('denied', guest.name, {});
         send(guest.ws, { t: 'denied' });
       }
       break;
@@ -240,6 +253,7 @@ function handle(ws, data) {
       session.lastMasked = maskedText;
       session.lastSpans = spans;
       session.lastDoc = { t: 'doc', text: rawText, file: msg.file };
+      session.recorder?.addSnapshot(msg.file || 'shared.txt', maskedText);
 
       if (!isHostSender) {
         recordEdit(session, ws, prevRaw, rawText, editChange, send);
@@ -273,6 +287,68 @@ function handle(ws, data) {
       break;
     }
 
+    case 'suggest': {
+      // approved members only; forwarded to every editor except the sender.
+      // "from" is set by the server, so nobody can pretend to be someone else.
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      recordSuggestion(session, ws, msg);
+      const out = { ...msg, from: ws.name };
+      if (isSuggestionMasked(msg, session.lastDoc ? session.lastDoc.text : '')) {
+        out.masked = true;
+      }
+      for (const w of everyone(session)) {
+        if (isEditor(w) && w !== ws) send(w, out);
+      }
+      break;
+    }
+
+    case 'suggest_result': {
+      if (!isEditor(ws)) break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      recordSuggestionResult(session, msg, ws);
+      const out = { ...msg, from: ws.name };
+      const maskedOut = typeof out.text === 'string'
+        ? { ...out, text: maskSecrets(out.text).text }
+        : out;
+      for (const w of everyone(session)) {
+        if (w !== ws) send(w, isEditor(w) ? out : maskedOut);
+      }
+      break;
+    }
+
+    case 'role': {
+      // only the superhost can promote or demote
+      if (ws.role !== 'superhost') break;
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      if (msg.role !== 'host' && msg.role !== 'guest') break;
+      const target = session.peers.find((p) => p.name === msg.name);
+      if (!target) { fail(ws, 'no such person'); break; }
+      target.ws.role = msg.role;
+      if (msg.role === 'host') {
+        target.ws.canEdit = true;
+        setRevoked(session, target.name, false, send);
+      } else if (msg.role === 'guest') {
+        target.ws.canEdit = false;
+        setRevoked(session, target.name, true, send);
+      }
+      session.recorder?.addEvent('role_change', ws.name, { target: msg.name, role: msg.role });
+      send(target.ws, { t: 'role', role: msg.role });
+      send(target.ws, { t: 'edit_status', canEdit: !!target.ws.canEdit });
+      if (session.term) {
+        // a newly promoted host sees the shared terminal; a demoted one loses it
+        if (msg.role === 'host') {
+          send(target.ws, { t: 'term_open', allowInput: session.term.allowInput });
+        } else {
+          send(target.ws, { t: 'term_close' });
+        }
+      }
+      broadcastPeers(session);
+      break;
+    }
+
     case 'request_edit': {
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
@@ -280,6 +356,7 @@ function handle(ws, data) {
         fail(ws, 'already an editor');
         break;
       }
+      session.recorder?.addEvent('edit_request', ws.name, {});
       send(session.host, { t: 'edit_request', name: ws.name });
       break;
     }
@@ -296,11 +373,13 @@ function handle(ws, data) {
       if (msg.approve) {
         target.ws.canEdit = true;
         setRevoked(session, target.name, false, send);
+        session.recorder?.addEvent('edit_granted', target.name, {});
         send(target.ws, { t: 'edit_status', canEdit: true });
         sendToAll(session, { t: 'edit_granted', name: target.name });
         broadcastPeers(session);
       } else {
         target.ws.canEdit = false;
+        session.recorder?.addEvent('edit_denied', target.name, {});
         send(target.ws, { t: 'edit_status', canEdit: false });
         send(target.ws, { t: 'edit_denied', name: target.name });
       }
@@ -322,12 +401,12 @@ function handle(ws, data) {
       }
       target.ws.canEdit = false;
       setRevoked(session, target.name, true, send);
+      session.recorder?.addEvent('edit_revoked', target.name, {});
       send(target.ws, { t: 'edit_status', canEdit: false });
       sendToAll(session, { t: 'edit_revoked', name: target.name });
       broadcastPeers(session);
       break;
     }
-
 
     // ----- shared terminal: superhost -> hosts only, never guests -----
     case 'term_open': {
@@ -380,33 +459,48 @@ function handle(ws, data) {
       break;
     }
 
-    case 'role': {
-      // only the superhost can promote or demote
-      if (ws.role !== 'superhost') break;
-      const session = sessions.get(ws.code);
-      if (!session) break;
-      if (msg.role !== 'host' && msg.role !== 'guest') break;
-      const target = session.peers.find((p) => p.name === msg.name);
-      if (!target) { fail(ws, 'no such person'); break; }
-      target.ws.role = msg.role;
-      if (msg.role === 'host') {
-        target.ws.canEdit = true;
-        setRevoked(session, target.name, false, send);
-      } else if (msg.role === 'guest') {
-        target.ws.canEdit = false;
-        setRevoked(session, target.name, true, send);
-      }
-      send(target.ws, { t: 'role', role: msg.role });
-      send(target.ws, { t: 'edit_status', canEdit: !!target.ws.canEdit });
-      if (session.term) {
-        // a newly promoted host sees the shared terminal; a demoted one loses it
-        if (msg.role === 'host') {
-          send(target.ws, { t: 'term_open', allowInput: session.term.allowInput });
-        } else {
-          send(target.ws, { t: 'term_close' });
+    case 'replay_get': {
+      const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+      const requesterName = ws.name || (typeof msg.name === 'string' ? msg.name.trim() : '');
+
+      let data = null;
+      if (!id || id === 'last' || id === 'latest') {
+        data = getLatestRecording(RECORDINGS_DIR, (rec) => {
+          return ws.allowedReplays?.has(rec.id) ||
+            (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+        });
+        if (!data) {
+          send(ws, { t: 'error', msg: 'no replay' });
+          break;
+        }
+      } else {
+        if (!/^[a-f0-9]{12}$/.test(id)) {
+          send(ws, { t: 'error', msg: 'no replay' });
+          break;
+        }
+        data = getRecording(id);
+        if (!data) {
+          send(ws, { t: 'error', msg: 'no replay' });
+          break;
+        }
+        const isAuthorized = ws.allowedReplays?.has(id) ||
+          (requesterName && Array.isArray(data.participants) && data.participants.includes(requesterName));
+        if (!isAuthorized) {
+          send(ws, { t: 'error', msg: 'no replay' });
+          break;
         }
       }
-      broadcastPeers(session);
+      send(ws, { t: 'replay', data });
+      break;
+    }
+
+    case 'replay_list': {
+      const requesterName = ws.name || (typeof msg.name === 'string' ? msg.name.trim() : '');
+      const recordings = listRecordings(RECORDINGS_DIR, (rec) => {
+        return ws.allowedReplays?.has(rec.id) ||
+          (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+      });
+      send(ws, { t: 'replay_list', recordings });
       break;
     }
 
@@ -419,6 +513,20 @@ function cleanup(ws) {
   const session = sessions.get(ws.code);
   if (!session) return;
   if (ws === session.host) {
+    session.recorder?.addEvent('session_end', ws.name, {});
+    session.recorder?.finish();
+    const replayId = saveRecording(session.recorder);
+    const summary = getSummary(session.recorder);
+    for (const w of everyone(session)) {
+      if (replayId) {
+        w.allowedReplays = w.allowedReplays || new Set();
+        w.allowedReplays.add(replayId);
+        send(w, { t: 'replay_ready', id: replayId });
+      }
+      if (summary) {
+        send(w, summary);
+      }
+    }
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });
     for (const p of session.pending) send(p.ws, { t: 'ended' });
     clearSession(ws.code);

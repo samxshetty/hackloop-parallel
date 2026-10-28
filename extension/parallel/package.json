@@ -57,6 +57,18 @@
       {
         "command": "parallel.jumpToPerson",
         "title": "Parallel: Jump to Person"
+      },
+      {
+        "command": "parallel.shareTerminal",
+        "title": "Parallel: Share Terminal"
+      },
+      {
+        "command": "parallel.stopSharingTerminal",
+        "title": "Parallel: Stop Sharing Terminal"
+      },
+      {
+        "command": "parallel.toggleTerminalInput",
+        "title": "Parallel: Allow or Block Typing in Shared Terminal"
       }
     ],
     "viewsContainers": {
@@ -83,6 +95,11 @@
           "type": "string",
           "default": "ws://localhost:8080",
           "description": "Address of the Parallel server"
+        },
+        "parallel.terminalShell": {
+          "type": "string",
+          "default": "",
+          "description": "Shell to run in the shared terminal (empty: cmd.exe on Windows, $SHELL elsewhere)"
         }
       }
     }

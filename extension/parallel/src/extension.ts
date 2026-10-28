@@ -3,6 +3,7 @@ import { connect, send, onMessage, disconnect, session, isEditor } from './conne
 import { registerSafetyStatus } from './safety/status';
 import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
+import { ParticipantsProvider } from './sidebar';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -36,6 +37,9 @@ let cursorTimer: NodeJS.Timeout | undefined;
 
 // Status bar: shows your role and the session code
 const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+
+// Sidebar provider for the Participants tree view
+const sidebar = new ParticipantsProvider();
 
 function updateStatus(code?: string) {
     if (!session.role) {
@@ -186,6 +190,7 @@ function resetShared() {
     session.canEdit = false;
     pendingEditRequest = false;
     clearCursors();
+    sidebar.setPeers([]);
 }
 
 // ---------- remote cursors ----------
@@ -374,6 +379,7 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('peers', (msg) => {
         lastPeers = msg.peers ??
             (msg.list ?? []).map((n: string) => ({ name: n, role: 'guest', canEdit: false }));
+        sidebar.setPeers(lastPeers);
         console.log('peers:', lastPeers);
         sendDoc(); // editors re-send so late joiners and demoted people see the file
     });
@@ -645,6 +651,48 @@ export function activate(context: vscode.ExtensionContext) {
         panel.webview.html = getMicTestHtml();
     });
 
+    // Jump editor view to a participant's last known cursor position
+    const jumpToPerson = vscode.commands.registerCommand(
+        'parallel.jumpToPerson',
+        async (arg?: string | { name: string }) => {
+            let targetName = typeof arg === 'string' ? arg : arg?.name;
+            if (!targetName) {
+                if (lastPeers.length === 0) {
+                    vscode.window.showInformationMessage('No participants in the session.');
+                    return;
+                }
+                const pick = await vscode.window.showQuickPick(
+                    lastPeers.map((p) => p.name),
+                    { placeHolder: 'Select a participant to jump to' }
+                );
+                if (!pick) {
+                    return;
+                }
+                targetName = pick;
+            }
+
+            const pos = cursors.get(targetName);
+            if (!pos) {
+                vscode.window.showInformationMessage(`No cursor position for ${targetName} yet.`);
+                return;
+            }
+
+            // Find visible editor showing the shared document
+            const editor = (vscode.window.activeTextEditor && isSharedDoc(vscode.window.activeTextEditor.document))
+                ? vscode.window.activeTextEditor
+                : vscode.window.visibleTextEditors.find((e) => isSharedDoc(e.document));
+
+            if (!editor) {
+                vscode.window.showInformationMessage('The shared file is not open in an editor.');
+                return;
+            }
+
+            const position = new vscode.Position(pos.line, pos.character);
+            const range = new vscode.Range(position, position);
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+        }
+    );
+
     // The read-only "parallel:" files
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
@@ -675,9 +723,11 @@ export function activate(context: vscode.ExtensionContext) {
     // Redraw remote cursors when tabs open, close or move
     const visibleWatcher = vscode.window.onDidChangeVisibleTextEditors(() => repaintCursors());
 
+    const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
+
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, provider, watcher,
-        selectionWatcher, visibleWatcher, status);
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, jumpToPerson, provider,
+        watcher, selectionWatcher, visibleWatcher, status, participantsView);
 }
 
 export function deactivate() {

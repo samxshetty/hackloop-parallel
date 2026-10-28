@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
-import { onMessage, send } from '../connection';
+import { onMessage, send, connect, session } from '../connection';
 import { ReplayData } from './types';
 import { showReplayPanel, getLastActiveReplay } from './panel';
 import { renderReplayHtml } from './viewerHtml';
 
 let lastReplayId: string | null = null;
 let lastReplayData: ReplayData | null = null;
+let lastReplayReceivedAt = 0;
 let extContext: vscode.ExtensionContext | null = null;
 
 export function validateReplay(data: any): data is ReplayData {
@@ -15,7 +16,7 @@ export function validateReplay(data: any): data is ReplayData {
   if (data.v !== 1) {
     return false;
   }
-  if (typeof data.id !== 'string' || !data.id) {
+  if (typeof data.id !== 'string' || !/^[a-f0-9]{12}$/.test(data.id)) {
     return false;
   }
   if (typeof data.code !== 'string') {
@@ -36,8 +37,46 @@ export function validateReplay(data: any): data is ReplayData {
   return true;
 }
 
-export function requestReplay(id: string): void {
-  send({ t: 'replay_get', id });
+export function saveLastReplayId(id: string): void {
+  if (!id || typeof id !== 'string') {
+    return;
+  }
+  lastReplayId = id;
+  try {
+    extContext?.workspaceState.update('parallel.lastReplayId', id);
+    extContext?.globalState.update('parallel.lastReplayId', id);
+  } catch {
+    // Ignore storage update errors
+  }
+}
+
+export function saveLastName(name: string): void {
+  if (!name || typeof name !== 'string') {
+    return;
+  }
+  try {
+    extContext?.workspaceState.update('parallel.lastName', name);
+    extContext?.globalState.update('parallel.lastName', name);
+  } catch {
+    // Ignore storage update errors
+  }
+}
+
+export function getSavedName(): string {
+  return session.name ||
+    extContext?.workspaceState.get<string>('parallel.lastName') ||
+    extContext?.globalState.get<string>('parallel.lastName') ||
+    '';
+}
+
+export async function requestReplay(id?: string): Promise<void> {
+  const name = getSavedName();
+  try {
+    await connect();
+  } catch {
+    // Connection attempt made; proceed with send if socket is open
+  }
+  send({ t: 'replay_get', id: id || 'last', name });
 }
 
 export function parseReplayFromHtml(html: string): ReplayData | null {
@@ -54,16 +93,65 @@ export function parseReplayFromHtml(html: string): ReplayData | null {
   }
 }
 
+export async function findLatestLocalReplay(userName?: string): Promise<ReplayData | null> {
+  try {
+    const uris = await vscode.workspace.findFiles('**/recordings/*.json');
+    if (!uris || uris.length === 0) {
+      return null;
+    }
+
+    const candidates: { uri: vscode.Uri; mtime: number }[] = [];
+    for (const uri of uris) {
+      const fileName = uri.path.split('/').pop() || '';
+      if (/^[a-f0-9]{12}\.json$/.test(fileName)) {
+        try {
+          const stat = await vscode.workspace.fs.stat(uri);
+          candidates.push({ uri, mtime: stat.mtime });
+        } catch {
+          // Ignore inaccessible files
+        }
+      }
+    }
+
+    candidates.sort((a, b) => b.mtime - a.mtime);
+
+    for (const cand of candidates) {
+      try {
+        const bytes = await vscode.workspace.fs.readFile(cand.uri);
+        const text = new TextDecoder('utf-8').decode(bytes);
+        if (!text || !text.trim()) {
+          continue;
+        }
+        const parsed = JSON.parse(text);
+        if (validateReplay(parsed)) {
+          if (!userName || (Array.isArray(parsed.participants) && parsed.participants.includes(userName))) {
+            return parsed;
+          }
+        }
+      } catch {
+        // Skip empty or malformed files
+        continue;
+      }
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function registerReplayLoader(context: vscode.ExtensionContext): void {
   extContext = context;
+  lastReplayId = context.workspaceState.get<string>('parallel.lastReplayId') ||
+    context.globalState.get<string>('parallel.lastReplayId') ||
+    null;
 
   // On replay_ready: remember the id and offer to open
   onMessage('replay_ready', async (msg: any) => {
     if (msg && typeof msg.id === 'string') {
-      lastReplayId = msg.id;
+      saveLastReplayId(msg.id);
       const pick = await vscode.window.showInformationMessage('Session ended. Open replay?', 'Open Replay');
       if (pick === 'Open Replay') {
-        requestReplay(msg.id);
+        await requestReplay(msg.id);
       }
     }
   });
@@ -88,7 +176,9 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
   // On replay: validate shape (v === 1) and open viewer
   onMessage('replay', (msg: any) => {
     if (validateReplay(msg?.data)) {
+      saveLastReplayId(msg.data.id);
       lastReplayData = msg.data;
+      lastReplayReceivedAt = Date.now();
       if (extContext) {
         showReplayPanel(extContext, msg.data);
       }
@@ -98,12 +188,44 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
   });
 
   // Command: Open Last Replay
-  const openLast = vscode.commands.registerCommand('parallel.openLastReplay', () => {
-    if (!lastReplayId) {
-      vscode.window.showWarningMessage('No recent replay available in this session.');
+  const openLast = vscode.commands.registerCommand('parallel.openLastReplay', async () => {
+    if (session.name) {
+      saveLastName(session.name);
+    }
+    const beforeTime = Date.now();
+    const targetId = lastReplayId ||
+      extContext?.workspaceState.get<string>('parallel.lastReplayId') ||
+      extContext?.globalState.get<string>('parallel.lastReplayId') ||
+      'last';
+    const userName = getSavedName();
+
+    // 1. Try requesting from server over WebSocket
+    try {
+      await connect();
+      send({ t: 'replay_get', id: targetId, name: userName });
+
+      // Wait up to 1.5 seconds for response from server
+      const timeoutAt = Date.now() + 1500;
+      while (Date.now() < timeoutAt) {
+        if (lastReplayReceivedAt >= beforeTime) {
+          return;
+        }
+        await new Promise((r) => setTimeout(r, 50));
+      }
+    } catch {
+      // Server not reachable or failed; proceed to local fallback
+    }
+
+    // 2. Discover and load from local saved recordings in workspace
+    const local = await findLatestLocalReplay(userName);
+    if (local && extContext) {
+      saveLastReplayId(local.id);
+      lastReplayData = local;
+      showReplayPanel(extContext, local);
       return;
     }
-    requestReplay(lastReplayId);
+
+    vscode.window.showWarningMessage('No recent replay available in this session.');
   });
 
   // Command: Open Replay File
@@ -136,6 +258,7 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
       }
 
       if (replayData && extContext) {
+        saveLastReplayId(replayData.id);
         lastReplayData = replayData;
         showReplayPanel(extContext, replayData);
       } else {

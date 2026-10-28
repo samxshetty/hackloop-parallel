@@ -14,11 +14,12 @@ let socket: WebSocket | undefined;
 export const session = {
     role: undefined as Role | undefined,
     name: '', // your display name in this session (empty when no session is active)
+    canEdit: false,
 };
 
 // True for the roles that may edit directly
 export function isEditor(): boolean {
-    return session.role === 'superhost' || session.role === 'host';
+    return session.role === 'superhost' || session.role === 'host' || session.canEdit;
 }
 
 // Register a function for one message type, e.g. onMessage('peers', fn)

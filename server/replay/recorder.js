@@ -121,18 +121,13 @@ function createRecorder(code) {
       }
 
       const minGap = getMinGap();
-      if (now - lastSnapshotTime >= minGap) {
+      if (safeFile !== lastSnapshotFile || now - lastSnapshotTime >= minGap) {
         // If there was a pending snapshot, commit it first
         if (pendingSnapshot) {
           commitSnapshot(pendingSnapshot);
           pendingSnapshot = null;
         }
-        // Then commit this one if gap still satisfied and not duplicate
-        if (now - lastSnapshotTime >= minGap) {
-          commitSnapshot({ at, file: safeFile, text: safeText, now });
-        } else {
-          pendingSnapshot = { at, file: safeFile, text: safeText, now };
-        }
+        commitSnapshot({ at, file: safeFile, text: safeText, now });
       } else {
         // Coalesce: save as pending snapshot
         pendingSnapshot = { at, file: safeFile, text: safeText, now };

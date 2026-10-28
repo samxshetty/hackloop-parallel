@@ -31,6 +31,18 @@
         "title": "Parallel: Change Role"
       },
       {
+        "command": "parallel.requestEditAccess",
+        "title": "Parallel: Request Edit Access"
+      },
+      {
+        "command": "parallel.grantEditAccess",
+        "title": "Parallel: Grant Edit Access"
+      },
+      {
+        "command": "parallel.revokeEditAccess",
+        "title": "Parallel: Revoke Edit Access"
+      },
+      {
         "command": "parallel.commitWithCredit",
         "title": "Parallel: Commit With Credit"
       },

@@ -6,10 +6,11 @@
   "scripts": {
     "start": "node server.js",
     "test": "node test.js",
-    "test:replay": "node --test replay/",
+    "test:replay": "node --test replay/*.test.js",
     "test:safety": "node --test safety/",
     "test:e2e-safety": "node test-safety.js",
-    "test:e2e-replay": "node test-replay.js"
+    "test:e2e-replay": "node test-replay.js",
+    "test:edit-access": "node test-edit-access.js"
   },
   "keywords": [],
   "author": "",

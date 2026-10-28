@@ -72,9 +72,48 @@ function getRecording(id, dir = RECORDINGS_DIR) {
       return null;
     }
     const content = fs.readFileSync(filePath, 'utf8');
+    if (!content || !content.trim()) return null;
     const data = JSON.parse(content);
     if (data && data.v === 1 && data.id === id) {
       return data;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function getLatestRecording(dir = RECORDINGS_DIR, filterFn = null) {
+  try {
+    if (!fs.existsSync(dir)) return null;
+    const files = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.json') && /^[a-f0-9]{12}\.json$/.test(f))
+      .map((f) => {
+        const full = path.join(dir, f);
+        try {
+          const stat = fs.statSync(full);
+          return { name: f, full, mtime: stat.mtimeMs };
+        } catch {
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .sort((a, b) => b.mtime - a.mtime);
+
+    for (const file of files) {
+      try {
+        const content = fs.readFileSync(file.full, 'utf8');
+        if (!content || !content.trim()) continue;
+        const data = JSON.parse(content);
+        if (data && data.v === 1 && typeof data.id === 'string' && /^[a-f0-9]{12}$/.test(data.id)) {
+          if (!filterFn || filterFn(data)) {
+            return data;
+          }
+        }
+      } catch {
+        // Skip empty or malformed files
+        continue;
+      }
     }
     return null;
   } catch {
@@ -87,5 +126,6 @@ module.exports = {
   ensureDir,
   saveRecording,
   getRecording,
+  getLatestRecording,
   pruneRecordings,
 };

@@ -2,6 +2,8 @@
 
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
+const fs = require('fs');
+const path = require('path');
 const WebSocket = require('ws');
 
 const PORT = 8098;
@@ -211,6 +213,42 @@ async function run() {
     assert.strictEqual(data.participants.length, 2, 'Participants match');
     assert.ok(data.participants.includes('HostAlice'));
     assert.ok(data.participants.includes('GuestBob'));
+
+    // 13. Asserts: Latest replay request (no id / id: 'last')
+    // Unauthorized client requesting latest replay
+    const unauthClient = await connect();
+    unauthClient.send({ t: 'replay_get', id: 'last', name: 'UnknownUser' });
+    const unauthErr = await unauthClient.nextMsg('error');
+    assert.strictEqual(unauthErr.msg, 'no replay', 'Unauthorized latest replay request must be rejected');
+    unauthClient.close();
+
+    // Authorized participant requesting latest replay
+    const authClient = await connect();
+    authClient.send({ t: 'replay_get', id: 'last', name: 'HostAlice' });
+    const latestMsg = await authClient.nextMsg('replay');
+    assert.strictEqual(latestMsg.t, 'replay');
+    assert.strictEqual(latestMsg.data.id, replayId, 'Latest replay must match most recent session id');
+    assert.strictEqual(latestMsg.data.code, code);
+    authClient.close();
+
+    // 14. Asserts: Empty and malformed file resilience
+    const recDir = path.join(__dirname, 'recordings');
+    const emptyPath = path.join(recDir, '000000000000.json');
+    const malformedPath = path.join(recDir, '111111111111.json');
+    fs.writeFileSync(emptyPath, '', 'utf8');
+    fs.writeFileSync(malformedPath, '{ broken json', 'utf8');
+
+    try {
+      const authClient2 = await connect();
+      authClient2.send({ t: 'replay_get', name: 'GuestBob' });
+      const resilientMsg = await authClient2.nextMsg('replay');
+      assert.strictEqual(resilientMsg.t, 'replay');
+      assert.strictEqual(resilientMsg.data.id, replayId, 'Skips corrupt files and returns valid recording');
+      authClient2.close();
+    } finally {
+      try { fs.unlinkSync(emptyPath); } catch {}
+      try { fs.unlinkSync(malformedPath); } catch {}
+    }
 
     guest.close();
   } catch (err) {

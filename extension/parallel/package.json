@@ -67,6 +67,10 @@
         "title": "Parallel: Open Admin Dashboard"
       },
       {
+        "command": "parallel.openHackathonMode",
+        "title": "Parallel: Open Hackathon Mode"
+      },
+      {
         "command": "parallel.micTest",
         "title": "Parallel: Test Microphone"
       },

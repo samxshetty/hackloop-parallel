@@ -17,7 +17,7 @@ export const session = {
     canEdit: false,
 };
 
-// True for the roles that may edit directly
+// True for the roles and approved guests that may edit directly
 export function isEditor(): boolean {
     return session.role === 'superhost' || session.role === 'host' || session.canEdit;
 }

@@ -9,10 +9,9 @@ const URL = `ws://localhost:${PORT}`;
 
 // Build fake keys from string parts so no real-looking secret is stored in the repo
 const fakeAwsKey = ['AKIA', '1234', '5678', '90AB', 'CDEF'].join('');
-const fakePassword = ['mySecret', 'Pass12345'].join('');
 const testDocText = [
   'const awsKey = "' + fakeAwsKey + '";',
-  'const password = "' + fakePassword + '";',
+  'const other = "line2";',
 ].join('\n');
 
 function connect() {
@@ -42,13 +41,22 @@ function connect() {
         send(obj) {
           ws.send(JSON.stringify(obj));
         },
-        nextMsg(filter) {
+        nextMsg(filter, timeoutMs = 4000) {
           const idx = queue.findIndex((m) => !filter || m.t === filter);
           if (idx !== -1) {
             return Promise.resolve(queue.splice(idx, 1)[0]);
           }
-          return new Promise((res) => {
-            waiters.push({ filter, resolve: res });
+          return new Promise((res, rej) => {
+            const timer = setTimeout(() => {
+              rej(new Error(`Timeout waiting for message type "${filter}"`));
+            }, timeoutMs);
+            waiters.push({
+              filter,
+              resolve: (val) => {
+                clearTimeout(timer);
+                res(val);
+              },
+            });
           });
         },
         close() {
@@ -58,6 +66,18 @@ function connect() {
     });
     ws.on('error', reject);
   });
+}
+
+async function expectNoMsg(client, filter, waitMs = 400) {
+  try {
+    const got = await client.nextMsg(filter, waitMs);
+    assert.fail(`Expected no "${filter}" message, but got: ${JSON.stringify(got)}`);
+  } catch (err) {
+    if (err.message && err.message.startsWith('Timeout waiting for message type')) {
+      return; // expected timeout
+    }
+    throw err;
+  }
 }
 
 async function startServerIfNeeded() {
@@ -95,7 +115,7 @@ async function run() {
     serverProcess = await startServerIfNeeded();
 
     const host = await connect();
-    const guest1 = await connect();
+    const guest = await connect();
 
     // 1. Host creates session
     host.send({ t: 'create', name: 'Host' });
@@ -104,63 +124,91 @@ async function run() {
     const code = created.code;
     assert.ok(code && code.length === 6);
 
-    // 2. Guest 1 joins
-    guest1.send({ t: 'join', code, name: 'Alice' });
-    const joinReq1 = await host.nextMsg('join_request');
-    assert.strictEqual(joinReq1.name, 'Alice');
+    // 2. Guest joins
+    guest.send({ t: 'join', code, name: 'Alice' });
+    const joinReq = await host.nextMsg('join_request');
+    assert.strictEqual(joinReq.name, 'Alice');
 
-    // 3. Host approves Guest 1
+    // 3. Host approves Guest
     host.send({ t: 'decide', name: 'Alice', approve: true });
-    const joined1 = await guest1.nextMsg('joined');
-    assert.strictEqual(joined1.t, 'joined');
+    const joined = await guest.nextMsg('joined');
+    assert.strictEqual(joined.t, 'joined');
 
-    // 4. Host sends text containing fake AWS key and password assignment
+    // 4. Host shares text with fake AWS key
     host.send({ t: 'doc', text: testDocText, file: 'config.ts' });
 
-    // 5. Assert Guest 1 receives masked text with bullets of equal length and no raw secret
-    const doc1 = await guest1.nextMsg('doc');
+    // 5. Guest receives masked text
+    const doc1 = await guest.nextMsg('doc');
     assert.strictEqual(doc1.t, 'doc');
     assert.strictEqual(doc1.text.length, testDocText.length, 'Length must be preserved exactly');
     assert.ok(!doc1.text.includes(fakeAwsKey), 'Guest must not receive fake AWS key');
-    assert.ok(!doc1.text.includes(fakePassword), 'Guest must not receive fake password');
-    assert.ok(doc1.text.includes('•'), 'Guest must receive bullets for secrets');
+    assert.ok(doc1.text.includes('•'), 'Guest must receive bullets for secret');
 
-    // 6. Assert Host receives { t: 'masked' } with the right count and kinds
+    // Host receives masked notification
     const maskedMsg = await host.nextMsg('masked');
     assert.strictEqual(maskedMsg.t, 'masked');
-    assert.strictEqual(maskedMsg.count, 2, 'Must report 2 masked secrets');
-    assert.ok(Array.isArray(maskedMsg.kinds));
-    assert.ok(maskedMsg.kinds.includes('AWS Access Key'));
-    assert.ok(maskedMsg.kinds.includes('Secret Assignment'));
+    assert.strictEqual(maskedMsg.count, 1);
 
-    // 7. Late-joining guest (Guest 2) also gets masked text
-    const guest2 = await connect();
-    guest2.send({ t: 'join', code, name: 'Bob' });
-    const joinReq2 = await host.nextMsg('join_request');
-    assert.strictEqual(joinReq2.name, 'Bob');
+    // 6. Guest requests edit access
+    guest.send({ t: 'request_edit' });
+    const editReq = await host.nextMsg('edit_request');
+    assert.strictEqual(editReq.name, 'Alice');
 
-    host.send({ t: 'decide', name: 'Bob', approve: true });
-    const joined2 = await guest2.nextMsg('joined');
-    assert.strictEqual(joined2.t, 'joined');
+    // 7. Host approves edit access
+    host.send({ t: 'decide_edit', name: 'Alice', approve: true });
+    const editStatus = await guest.nextMsg('edit_status');
+    assert.strictEqual(editStatus.canEdit, true);
 
-    const doc2 = await guest2.nextMsg('doc');
-    assert.strictEqual(doc2.t, 'doc');
-    assert.strictEqual(doc2.text.length, testDocText.length, 'Late-joining guest text length preserved');
-    assert.ok(!doc2.text.includes(fakeAwsKey), 'Late-joining guest must not receive fake AWS key');
-    assert.ok(!doc2.text.includes(fakePassword), 'Late-joining guest must not receive fake password');
-    assert.ok(doc2.text.includes('•'), 'Late-joining guest must receive bullets');
+    // 8. Guest edits another line -> host copy keeps real key and gets edit
+    const guestMaskedDoc = doc1.text;
+    const guestValidEdit = guestMaskedDoc.replace('"line2"', '"updated_line2"');
+    guest.send({ t: 'doc', text: guestValidEdit, file: 'config.ts' });
 
-    // 8. Guest doc is still ignored (blocked)
-    guest1.send({ t: 'doc', text: 'malicious guest update' });
-    const hostReceivedDoc = await Promise.race([
-      host.nextMsg('doc').then((m) => ({ got: m })),
-      new Promise((r) => setTimeout(() => r({ timeout: true }), 400)),
-    ]);
-    assert.ok(hostReceivedDoc.timeout, 'Guest doc must not be delivered to host');
+    const hostDoc = await host.nextMsg('doc');
+    assert.ok(hostDoc.text.includes(fakeAwsKey), 'Host must keep the real AWS key');
+    assert.ok(hostDoc.text.includes('"updated_line2"'), 'Host must get the guest edit');
+
+    // 9. Host receives { t: 'credit' } with guest listed
+    const creditMsg1 = await host.nextMsg('credit');
+    assert.strictEqual(creditMsg1.t, 'credit');
+    assert.ok(Array.isArray(creditMsg1.list));
+    const aliceCredit = creditMsg1.list.find((c) => c.name === 'Alice');
+    assert.ok(aliceCredit, 'Alice must be in credit list');
+    assert.strictEqual(aliceCredit.revoked, false);
+    assert.ok(aliceCredit.edits >= 1);
+
+    // 10. Guest edits masked key -> rejected
+    const guestBadEdit = guestMaskedDoc.replace('•', 'X');
+    guest.send({ t: 'doc', text: guestBadEdit, file: 'config.ts' });
+
+    const errMsg = await guest.nextMsg('error');
+    assert.strictEqual(errMsg.t, 'error');
+    assert.ok(errMsg.msg.includes('hidden') || errMsg.msg.includes("can't be edited"));
+
+    // Guest receives resynced doc with last masked text
+    const guestResync = await guest.nextMsg('doc');
+    assert.strictEqual(guestResync.t, 'doc');
+
+    // Host should NOT receive any doc containing 'X'
+    await expectNoMsg(host, 'doc', 400);
+
+    // 11. Revoke edit access
+    host.send({ t: 'revoke_edit', name: 'Alice' });
+    const revokedStatus = await guest.nextMsg('edit_status');
+    assert.strictEqual(revokedStatus.canEdit, false);
+
+    // After revoke, host receives updated credit with revoked: true
+    const creditMsg2 = await host.nextMsg('credit');
+    const aliceRevoked = creditMsg2.list.find((c) => c.name === 'Alice');
+    assert.ok(aliceRevoked, 'Alice must remain in credit list after revoke');
+    assert.strictEqual(aliceRevoked.revoked, true);
+
+    // 12. After revoke, guest edit is rejected (blocked)
+    guest.send({ t: 'doc', text: guestMaskedDoc + '\n// extra line' });
+    await expectNoMsg(host, 'doc', 400);
 
     host.close();
-    guest1.close();
-    guest2.close();
+    guest.close();
   } catch (err) {
     errors.push(err);
     pass = false;

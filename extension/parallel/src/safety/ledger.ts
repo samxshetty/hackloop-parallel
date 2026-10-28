@@ -1,6 +1,14 @@
 import { onMessage } from '../connection';
 import { logSafety } from './log';
 
+export interface ContributorCredit {
+    name: string;
+    edits: number;
+    lines: number;
+    revoked: boolean;
+    count: number; // alias for edits
+}
+
 export interface CreditRecord {
     guestName: string;
     timestamp: number;
@@ -9,26 +17,62 @@ export interface CreditRecord {
 }
 
 class CreditLedger {
+    private contributors: Map<string, ContributorCredit> = new Map();
     private records: CreditRecord[] = [];
-    private counts: Map<string, number> = new Map();
 
     constructor() {
         onMessage('ended', () => this.clear());
         onMessage('closed', () => this.clear());
 
-        onMessage('suggest_result', (msg: any) => {
-            if (msg && (msg.action === 'accept' || msg.accepted === true || msg.approve === true)) {
-                const name = msg.guestName || msg.from || msg.name;
-                if (name) {
-                    this.record({
-                        guestName: name,
-                        timestamp: Date.now(),
-                        file: msg.file || '',
-                        lineRange: Array.isArray(msg.lineRange) ? msg.lineRange : [msg.line ?? 0, msg.line ?? 0],
-                    });
-                }
+        // Update ledger from authoritative server credit messages
+        onMessage('credit', (msg: any) => {
+            if (msg && Array.isArray(msg.list)) {
+                this.updateFromCreditList(msg.list);
             }
         });
+    }
+
+    public updateFromCreditList(list: Array<{ name: string; edits: number; lines: number; revoked?: boolean }>) {
+        this.contributors.clear();
+        for (const item of list) {
+            if (!item || !item.name) {
+                continue;
+            }
+            const edits = typeof item.edits === 'number' ? item.edits : 0;
+            const lines = typeof item.lines === 'number' ? item.lines : 0;
+            const revoked = !!item.revoked;
+            this.contributors.set(item.name, {
+                name: item.name,
+                edits,
+                lines,
+                revoked,
+                count: edits,
+            });
+        }
+    }
+
+    public getCreditedGuests(): ContributorCredit[] {
+        return Array.from(this.contributors.values());
+    }
+
+    public getContributorCount(): number {
+        return this.contributors.size;
+    }
+
+    public getCounts(): Map<string, number> {
+        const counts = new Map<string, number>();
+        for (const [name, c] of this.contributors.entries()) {
+            counts.set(name, c.edits);
+        }
+        return counts;
+    }
+
+    public getCount(guestName: string): number {
+        return this.contributors.get(guestName)?.edits || 0;
+    }
+
+    public getRecords(): ReadonlyArray<CreditRecord> {
+        return this.records;
     }
 
     public record(record: { guestName: string; timestamp?: number; file?: string; lineRange?: [number, number] }) {
@@ -43,39 +87,26 @@ class CreditLedger {
             file: record.file || '',
             lineRange: record.lineRange || [0, 0],
         };
-
         this.records.push(entry);
-        const current = this.counts.get(guestName) || 0;
-        this.counts.set(guestName, current + 1);
 
-        try {
-            logSafety(`Suggestion accepted: ${guestName}${entry.file ? ' in ' + entry.file : ''}`);
-        } catch {
-            // ignore if logger not initialized
+        const existing = this.contributors.get(guestName);
+        if (existing) {
+            existing.edits += 1;
+            existing.count += 1;
+        } else {
+            this.contributors.set(guestName, {
+                name: guestName,
+                edits: 1,
+                lines: 1,
+                revoked: false,
+                count: 1,
+            });
         }
     }
 
-    public getCounts(): Map<string, number> {
-        return new Map(this.counts);
-    }
-
-    public getCount(guestName: string): number {
-        return this.counts.get(guestName) || 0;
-    }
-
-    public getRecords(): ReadonlyArray<CreditRecord> {
-        return this.records;
-    }
-
-    public getCreditedGuests(): Array<{ name: string; count: number }> {
-        return Array.from(this.counts.entries())
-            .filter(([_, count]) => count > 0)
-            .map(([name, count]) => ({ name, count }));
-    }
-
     public clear() {
+        this.contributors.clear();
         this.records = [];
-        this.counts.clear();
     }
 }
 

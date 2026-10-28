@@ -5,6 +5,7 @@ import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
 import { registerReplayLoader } from './replay/loader';
 import { AdminDashboardManager } from './dashboard/panel';
+import { ParticipantsProvider } from './sidebar';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024; // the server accepts up to 5 MB per message
@@ -15,7 +16,7 @@ let sharedFile = 'shared.txt';
 let sharedUri: vscode.Uri | undefined;
 const sharedChanged = new vscode.EventEmitter<vscode.Uri>();
 
-// Editor side (superhost and promoted hosts): the file being shared
+// Editor side (superhost and promoted hosts/editors): the file being shared
 let hostDoc: vscode.TextDocument | undefined;
 let hostFileName = 'shared.txt';
 let sendTimer: NodeJS.Timeout | undefined;
@@ -38,6 +39,9 @@ let cursorTimer: NodeJS.Timeout | undefined;
 
 // Status bar: shows your role and the session code
 const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
+
+// Sidebar provider for the Participants tree view
+const sidebar = new ParticipantsProvider();
 
 function updateStatus(code?: string) {
     if (!session.role) {
@@ -188,6 +192,7 @@ function resetShared() {
     session.canEdit = false;
     pendingEditRequest = false;
     clearCursors();
+    sidebar.setPeers([]);
 }
 
 // ---------- remote cursors ----------
@@ -268,6 +273,83 @@ async function handleJoinRequest(name: string) {
     send({ t: 'decide', name, approve: pick === 'Approve' });
 }
 
+// Generates the HTML layout for the microphone test webview panel
+function getMicTestHtml(): string {
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Microphone Test</title>
+    <style>
+        body {
+            font-family: var(--vscode-font-family, sans-serif);
+            padding: 24px;
+            color: var(--vscode-foreground);
+            background-color: var(--vscode-editor-background);
+            line-height: 1.5;
+        }
+        h2 {
+            margin-top: 0;
+        }
+        button {
+            background-color: var(--vscode-button-background);
+            color: var(--vscode-button-foreground);
+            border: none;
+            padding: 8px 16px;
+            cursor: pointer;
+            border-radius: 2px;
+            font-size: 13px;
+        }
+        button:hover {
+            background-color: var(--vscode-button-hoverBackground);
+        }
+        #status {
+            margin-top: 16px;
+            font-weight: 500;
+        }
+    </style>
+</head>
+<body>
+    <h2>Microphone Spike Test</h2>
+    <p>Test whether audio input (getUserMedia) works inside a VS Code webview.</p>
+    <button id="test-mic-btn">Test microphone</button>
+    <div id="status">Status: Ready to test microphone.</div>
+
+    <script>
+        const btn = document.getElementById('test-mic-btn');
+        const statusEl = document.getElementById('status');
+
+        btn.addEventListener('click', async () => {
+            // Check if mediaDevices is supported in this browser context
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                statusEl.textContent = 'Error: navigator.mediaDevices.getUserMedia is undefined in this environment.';
+                return;
+            }
+
+            statusEl.textContent = 'Requesting microphone permission...';
+
+            try {
+                // Request access to microphone audio stream
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+                // Success: report that microphone works
+                statusEl.textContent = 'Microphone works';
+
+                // Release microphone immediately by stopping all tracks
+                stream.getTracks().forEach(track => track.stop());
+            } catch (err) {
+                // Failure: display exact error name and message (e.g. NotAllowedError)
+                const errorName = err && err.name ? err.name : 'UnknownError';
+                const errorMessage = err && err.message ? err.message : String(err);
+                statusEl.textContent = 'Error [' + errorName + ']: ' + errorMessage;
+            }
+        });
+    </script>
+</body>
+</html>`;
+}
+
 // ---------- activate ----------
 
 export function activate(context: vscode.ExtensionContext) {
@@ -277,7 +359,7 @@ export function activate(context: vscode.ExtensionContext) {
     registerReplayLoader(context);
     AdminDashboardManager.getInstance().init(context);
 
-    // Message handlers. Teammates add their own with onMessage in their own files.
+    // Message handlers.
     onMessage('created', (msg) => {
         joinedOk = true;
         showCode(msg.code);
@@ -301,15 +383,16 @@ export function activate(context: vscode.ExtensionContext) {
     onMessage('peers', (msg) => {
         lastPeers = msg.peers ??
             (msg.list ?? []).map((n: string) => ({ name: n, role: 'guest', canEdit: false }));
+        sidebar.setPeers(lastPeers);
         console.log('peers:', lastPeers);
         sendDoc(); // editors re-send so late joiners and demoted people see the file
     });
     onMessage('doc', (msg) => {
-        if (session.role === 'guest') {
+        if (isEditor()) {
+            applyRemote(msg.text).then(repaintCursors); // another editor changed the file
+        } else {
             showSharedDoc(msg.text, msg.file);
             setTimeout(repaintCursors, 100);
-        } else {
-            applyRemote(msg.text).then(repaintCursors); // another editor changed the file
         }
     });
     onMessage('cursor', (msg) => {
@@ -555,6 +638,65 @@ export function activate(context: vscode.ExtensionContext) {
         send({ t: 'role', name: who.label, role });
     });
 
+    // MICROPHONE TEST (Person D spike)
+    // Opens a Webview panel with a button and status area to test getUserMedia
+    const micTest = vscode.commands.registerCommand('parallel.micTest', () => {
+        // Create and show a new webview panel in the editor area
+        const panel = vscode.window.createWebviewPanel(
+            'parallel.micTest',       // Internal identifier for the panel
+            'Microphone Test',         // Title displayed on the tab
+            vscode.ViewColumn.One,     // Column in which to show the panel
+            {
+                enableScripts: true,   // Crucial: allows JavaScript execution in the webview
+            }
+        );
+
+        // Set the webview HTML containing the button and status area
+        panel.webview.html = getMicTestHtml();
+    });
+
+    // Jump editor view to a participant's last known cursor position
+    const jumpToPerson = vscode.commands.registerCommand(
+        'parallel.jumpToPerson',
+        async (arg?: string | { name: string }) => {
+            let targetName = typeof arg === 'string' ? arg : arg?.name;
+            if (!targetName) {
+                if (lastPeers.length === 0) {
+                    vscode.window.showInformationMessage('No participants in the session.');
+                    return;
+                }
+                const pick = await vscode.window.showQuickPick(
+                    lastPeers.map((p) => p.name),
+                    { placeHolder: 'Select a participant to jump to' }
+                );
+                if (!pick) {
+                    return;
+                }
+                targetName = pick;
+            }
+
+            const pos = cursors.get(targetName);
+            if (!pos) {
+                vscode.window.showInformationMessage(`No cursor position for ${targetName} yet.`);
+                return;
+            }
+
+            // Find visible editor showing the shared document
+            const editor = (vscode.window.activeTextEditor && isSharedDoc(vscode.window.activeTextEditor.document))
+                ? vscode.window.activeTextEditor
+                : vscode.window.visibleTextEditors.find((e) => isSharedDoc(e.document));
+
+            if (!editor) {
+                vscode.window.showInformationMessage('The shared file is not open in an editor.');
+                return;
+            }
+
+            const position = new vscode.Position(pos.line, pos.character);
+            const range = new vscode.Range(position, position);
+            editor.revealRange(range, vscode.TextEditorRevealType.InCenter);
+        }
+    );
+
     // The read-only "parallel:" files
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
@@ -590,9 +732,11 @@ export function activate(context: vscode.ExtensionContext) {
         AdminDashboardManager.getInstance().open(context);
     });
 
+    const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
+
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, openDashboard, provider, watcher,
-        selectionWatcher, visibleWatcher, status);
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, micTest, jumpToPerson, openDashboard, provider,
+        watcher, selectionWatcher, visibleWatcher, status, participantsView);
 }
 
 export function deactivate() {

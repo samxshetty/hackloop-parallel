@@ -1,7 +1,7 @@
 {
   "name": "parallel",
   "displayName": "Parallel",
-  "description": "Live shared coding sessions with suggestions",
+  "description": "Live shared coding sessions with permission-based live editing",
   "version": "0.0.1",
   "publisher": "team-parallel",
   "repository": {
@@ -65,8 +65,45 @@
       {
         "command": "parallel.openAdminDashboard",
         "title": "Parallel: Open Admin Dashboard"
+      },
+      {
+        "command": "parallel.micTest",
+        "title": "Parallel: Test Microphone"
+      },
+      {
+        "command": "parallel.jumpToPerson",
+        "title": "Parallel: Jump to Person"
+      },
+      {
+        "command": "parallel.shareTerminal",
+        "title": "Parallel: Share Terminal"
+      },
+      {
+        "command": "parallel.stopSharingTerminal",
+        "title": "Parallel: Stop Sharing Terminal"
+      },
+      {
+        "command": "parallel.toggleTerminalInput",
+        "title": "Parallel: Allow or Block Typing in Shared Terminal"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "parallel",
+          "title": "Parallel",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "parallel": [
+        {
+          "id": "parallel.participants",
+          "name": "Participants"
+        }
+      ]
+    },
     "configuration": {
       "title": "Parallel",
       "properties": {
@@ -74,6 +111,11 @@
           "type": "string",
           "default": "ws://localhost:8080",
           "description": "Address of the Parallel server"
+        },
+        "parallel.terminalShell": {
+          "type": "string",
+          "default": "",
+          "description": "Shell to run in the shared terminal (empty: cmd.exe on Windows, $SHELL elsewhere)"
         }
       }
     }

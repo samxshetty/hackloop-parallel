@@ -5,6 +5,7 @@ import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
 import { registerReplayLoader } from './replay/loader';
 import { AdminDashboardManager } from './dashboard/panel';
+import { HackathonManager } from './hackathon/panel';
 import { ParticipantsProvider } from './sidebar';
 import { registerTerminal, closeTerminals } from './terminal';
 
@@ -278,6 +279,7 @@ export function activate(context: vscode.ExtensionContext) {
     registerSafetyLogger(context);
     registerReplayLoader(context);
     AdminDashboardManager.getInstance().init(context);
+    HackathonManager.getInstance().init(context);
 
     onMessage('created', (msg) => {
         joinedOk = true;
@@ -621,11 +623,15 @@ export function activate(context: vscode.ExtensionContext) {
         AdminDashboardManager.getInstance().open(context);
     });
 
+    const openHackathonMode = vscode.commands.registerCommand('parallel.openHackathonMode', () => {
+        HackathonManager.getInstance().open(context);
+    });
+
     const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
     const terminalDisposables = registerTerminal();
 
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, provider,
+        start, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, provider,
         watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 

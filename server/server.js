@@ -15,6 +15,18 @@ const {
   listRecordings,
   RECORDINGS_DIR,
 } = require('./replay');
+const {
+  getHackathonState,
+  updateSetup,
+  createTask,
+  updateTask,
+  deleteTask,
+  updateMilestone,
+  updateDeliverable,
+  updateNotes,
+  clearHackathonSession,
+  getNextBestActions,
+} = require('./hackathon');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -212,6 +224,8 @@ function handle(ws, data) {
         if (session.lastDoc) {
           send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
         }
+        const hState = getHackathonState(session.code, session.host.name);
+        send(guest.ws, { t: 'hackathon_sync', state: hState, recommendations: getNextBestActions(hState) });
       } else {
         session.recorder?.addEvent('denied', guest.name, {});
         send(guest.ws, { t: 'denied' });
@@ -504,6 +518,127 @@ function handle(ws, data) {
       break;
     }
 
+    // ----- Hackathon Command Center Handlers -----
+    case 'hackathon_get': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      const state = getHackathonState(ws.code, session.host.name);
+      send(ws, { t: 'hackathon_sync', state, recommendations: getNextBestActions(state) });
+      break;
+    }
+
+    case 'hackathon_update_setup': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (ws.role !== 'superhost' && ws.role !== 'host') {
+        fail(ws, 'Only hosts can configure hackathon settings');
+        break;
+      }
+      const res = updateSetup(ws.code, msg.setup || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_task_create': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot create tasks');
+        break;
+      }
+      const res = createTask(ws.code, msg.task || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_task_update': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot update tasks');
+        break;
+      }
+      const res = updateTask(ws.code, msg.id, msg.updates || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_task_delete': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot delete tasks');
+        break;
+      }
+      const res = deleteTask(ws.code, msg.id, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_milestone_update': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot update milestones');
+        break;
+      }
+      const res = updateMilestone(ws.code, msg.id, msg.updates || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_deliverable_update': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot update deliverables');
+        break;
+      }
+      const res = updateDeliverable(ws.code, msg.id, msg.updates || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_notes_update': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (!canEdit(ws)) {
+        fail(ws, 'Read-only participants cannot update notes');
+        break;
+      }
+      const res = updateNotes(ws.code, msg.notes || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
     default:
       fail(ws, 'unknown type');
   }
@@ -530,6 +665,7 @@ function cleanup(ws) {
     for (const peer of session.peers) send(peer.ws, { t: 'ended' });
     for (const p of session.pending) send(p.ws, { t: 'ended' });
     clearSession(ws.code);
+    clearHackathonSession(ws.code);
     sessions.delete(ws.code);
   } else {
     const wasPeer = session.peers.some((p) => p.ws === ws);

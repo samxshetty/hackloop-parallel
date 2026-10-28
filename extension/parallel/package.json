@@ -68,6 +68,10 @@
         "title": "Parallel: Open Admin Dashboard"
       },
       {
+        "command": "parallel.openHackathonMode",
+        "title": "Parallel: Open Hackathon Mode"
+      },
+      {
         "command": "parallel.jumpToPerson",
         "title": "Parallel: Jump to Person"
       },

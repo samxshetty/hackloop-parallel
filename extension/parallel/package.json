@@ -97,7 +97,10 @@
       "parallel": [
         {
           "id": "parallel.participants",
-          "name": "Participants"
+          "name": "Participants",
+          "icon": "media/icon.svg",
+          "type": "tree",
+          "contextualTitle": "Parallel"
         }
       ]
     },

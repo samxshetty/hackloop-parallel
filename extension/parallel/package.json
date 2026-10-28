@@ -53,8 +53,29 @@
       {
         "command": "parallel.micTest",
         "title": "Parallel: Test Microphone"
+      },
+      {
+        "command": "parallel.jumpToPerson",
+        "title": "Parallel: Jump to Person"
       }
     ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "parallel",
+          "title": "Parallel",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "parallel": [
+        {
+          "id": "parallel.participants",
+          "name": "Participants"
+        }
+      ]
+    },
     "configuration": {
       "title": "Parallel",
       "properties": {

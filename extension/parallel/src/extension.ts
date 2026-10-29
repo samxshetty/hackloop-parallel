@@ -3,7 +3,7 @@ import { connect, send, onMessage, disconnect, session, isEditor } from './conne
 import { registerSafetyStatus } from './safety/status';
 import { registerCreditCommands } from './safety/credit';
 import { registerSafetyLogger } from './safety/log';
-import { registerReplayLoader } from './replay/loader';
+import { registerReplayLoader, saveLastName, saveLastSessionCode } from './replay/loader';
 import { AdminDashboardManager } from './dashboard/panel';
 import { HackathonManager } from './hackathon/panel';
 import { ParticipantsProvider } from './sidebar';
@@ -283,6 +283,7 @@ export function activate(context: vscode.ExtensionContext) {
 
     onMessage('created', (msg) => {
         joinedOk = true;
+        saveLastSessionCode(msg.code);
         showCode(msg.code);
         sendDoc();
         updateStatus(msg.code);
@@ -388,13 +389,17 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
     onMessage('ended', () => {
-        vscode.window.showInformationMessage('The host ended the session.');
+        const msgText = session.role === 'superhost' ? 'Session ended.' : 'The host ended the session.';
+        vscode.window.showInformationMessage(msgText);
         session.role = undefined;
         updateStatus();
         resetShared();
         disconnect();
     });
     onMessage('error', (msg) => {
+        if (msg.msg === 'no replay') {
+            return;
+        }
         vscode.window.showWarningMessage('Server: ' + (msg.msg ?? msg.message));
         if (msg.fatal && session.role !== undefined && !joinedOk) {
 
@@ -436,9 +441,23 @@ export function activate(context: vscode.ExtensionContext) {
         session.role = 'superhost';
         session.canEdit = true;
         session.name = name.trim().slice(0, 30);
+        saveLastName(session.name);
         hostDoc = editor.document;
         hostFileName = baseName(editor.document.fileName);
         send({ t: 'create', name: session.name });
+    });
+
+
+    const endSession = vscode.commands.registerCommand('parallel.endSession', async () => {
+        if (!session.role) {
+            vscode.window.showErrorMessage('You are not in a Parallel session.');
+            return;
+        }
+        if (session.role !== 'superhost') {
+            vscode.window.showErrorMessage('Only the host can end the session.');
+            return;
+        }
+        send({ t: 'end_session' });
     });
 
     const join = vscode.commands.registerCommand('parallel.join', async () => {
@@ -467,6 +486,8 @@ export function activate(context: vscode.ExtensionContext) {
         session.role = 'guest';
         session.canEdit = false;
         session.name = name.trim().slice(0, 30);
+        saveLastName(session.name);
+        saveLastSessionCode(code.trim().toUpperCase());
         send({ t: 'join', code: code.trim().toUpperCase(), name: session.name });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
@@ -631,7 +652,7 @@ export function activate(context: vscode.ExtensionContext) {
     const terminalDisposables = registerTerminal();
 
     context.subscriptions.push(
-        start, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, provider,
+        start, endSession, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, provider,
         watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 

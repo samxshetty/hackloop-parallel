@@ -14,6 +14,7 @@ const {
   getLatestRecording,
   listRecordings,
   RECORDINGS_DIR,
+  ensureDir,
 } = require('./replay');
 const {
   getHackathonState,
@@ -42,6 +43,7 @@ const HEARTBEAT_MS = 15000;
 
 const wss = new WebSocketServer({ port: PORT, maxPayload: MAX_PAYLOAD });
 console.log(`Server running on ws://localhost:${PORT}`);
+ensureDir();
 
 const sessions = new Map(); // code -> { host, peers: [], pending: [], createdAt }
 const badByIp = new Map();  // ip -> { count, resetAt }
@@ -473,25 +475,45 @@ function handle(ws, data) {
       break;
     }
 
+    case 'end_session': {
+      if (ws.role !== 'superhost') {
+        fail(ws, 'only superhost can end session');
+        break;
+      }
+      const session = sessions.get(ws.code);
+      if (!session || ws !== session.host) {
+        fail(ws, 'not in an active session');
+        break;
+      }
+      terminateSession(session, ws);
+      break;
+    }
+
     case 'replay_get': {
       const id = typeof msg.id === 'string' ? msg.id.trim() : '';
+      const code = typeof msg.code === 'string' ? msg.code.trim().toUpperCase() : '';
       const requesterName = ws.name || (typeof msg.name === 'string' ? msg.name.trim() : '');
 
       let data = null;
       if (!id || id === 'last' || id === 'latest') {
-        data = getLatestRecording(RECORDINGS_DIR, (rec) => {
-          return ws.allowedReplays?.has(rec.id) ||
-            (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
-        });
+        if (code) {
+          data = getLatestRecording(RECORDINGS_DIR, (rec) => {
+            const isAuthorized = ws.allowedReplays?.has(rec.id) ||
+              (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+            return rec.code === code && isAuthorized;
+          });
+        }
+        if (!data) {
+          data = getLatestRecording(RECORDINGS_DIR, (rec) => {
+            return ws.allowedReplays?.has(rec.id) ||
+              (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+          });
+        }
         if (!data) {
           send(ws, { t: 'error', msg: 'no replay' });
           break;
         }
-      } else {
-        if (!/^[a-f0-9]{12}$/.test(id)) {
-          send(ws, { t: 'error', msg: 'no replay' });
-          break;
-        }
+      } else if (/^[a-f0-9]{12}$/.test(id)) {
         data = getRecording(id);
         if (!data) {
           send(ws, { t: 'error', msg: 'no replay' });
@@ -503,6 +525,20 @@ function handle(ws, data) {
           send(ws, { t: 'error', msg: 'no replay' });
           break;
         }
+      } else if (/^[A-Z0-9]{6}$/i.test(id)) {
+        const searchCode = id.toUpperCase();
+        data = getLatestRecording(RECORDINGS_DIR, (rec) => {
+          const isAuthorized = ws.allowedReplays?.has(rec.id) ||
+            (requesterName && Array.isArray(rec.participants) && rec.participants.includes(requesterName));
+          return rec.code === searchCode && isAuthorized;
+        });
+        if (!data) {
+          send(ws, { t: 'error', msg: 'no replay' });
+          break;
+        }
+      } else {
+        send(ws, { t: 'error', msg: 'no replay' });
+        break;
       }
       send(ws, { t: 'replay', data });
       break;
@@ -644,29 +680,40 @@ function handle(ws, data) {
   }
 }
 
+
+function terminateSession(session, endedByWs) {
+  session.recorder?.addEvent('session_end', endedByWs?.name || 'Host', {});
+  session.recorder?.finish();
+  const replayId = saveRecording(session.recorder);
+  const summary = getSummary(session.recorder);
+  const members = everyone(session);
+  const pending = [...session.pending];
+
+  for (const w of members) {
+    if (replayId) {
+      w.allowedReplays = w.allowedReplays || new Set();
+      w.allowedReplays.add(replayId);
+      send(w, { t: 'replay_ready', id: replayId, code: session.code });
+    }
+    if (summary) {
+      send(w, summary);
+    }
+    send(w, { t: 'ended' });
+  }
+  for (const p of pending) {
+    send(p.ws, { t: 'ended' });
+  }
+
+  clearSession(session.code);
+  clearHackathonSession(session.code);
+  sessions.delete(session.code);
+}
+
 function cleanup(ws) {
   const session = sessions.get(ws.code);
   if (!session) return;
   if (ws === session.host) {
-    session.recorder?.addEvent('session_end', ws.name, {});
-    session.recorder?.finish();
-    const replayId = saveRecording(session.recorder);
-    const summary = getSummary(session.recorder);
-    for (const w of everyone(session)) {
-      if (replayId) {
-        w.allowedReplays = w.allowedReplays || new Set();
-        w.allowedReplays.add(replayId);
-        send(w, { t: 'replay_ready', id: replayId });
-      }
-      if (summary) {
-        send(w, summary);
-      }
-    }
-    for (const peer of session.peers) send(peer.ws, { t: 'ended' });
-    for (const p of session.pending) send(p.ws, { t: 'ended' });
-    clearSession(ws.code);
-    clearHackathonSession(ws.code);
-    sessions.delete(ws.code);
+    terminateSession(session, ws);
   } else {
     const wasPeer = session.peers.some((p) => p.ws === ws);
     const wasPending = session.pending.some((p) => p.ws === ws);

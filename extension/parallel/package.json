@@ -28,6 +28,10 @@
         "title": "Parallel: Join Session"
       },
       {
+        "command": "parallel.endSession",
+        "title": "Parallel: End Session"
+      },
+      {
         "command": "parallel.changeRole",
         "title": "Parallel: Change Role"
       },

@@ -1,0 +1,158 @@
+{
+  "code": "ZPGPCT",
+  "setup": {
+    "hackathonName": "HackLoop 2026",
+    "projectName": "Collaborative Project",
+    "description": "Building under hackathon deadline pressure.",
+    "repositoryUrl": "",
+    "startTime": "2026-10-29T14:32:24.467Z",
+    "deadline": "2026-10-30T14:32:24.467Z",
+    "teamMembers": [
+      "Samridh"
+    ],
+    "goals": [
+      "Ship a functional MVP",
+      "Record a 2-minute demo",
+      "Submit before deadline"
+    ],
+    "updatedAt": 1793284344467
+  },
+  "tasks": [
+    {
+      "id": "task_mvp_core",
+      "title": "Build core feature prototype",
+      "description": "Implement the minimum viable feature that demonstrates end-to-end functionality.",
+      "acceptanceCriteria": "End-to-end happy path works with live data.",
+      "status": "In Progress",
+      "priority": "Critical",
+      "assignee": "Samridh",
+      "dueDate": "2026-10-29T20:32:24.467Z",
+      "milestoneId": "mvp",
+      "blockedReason": "",
+      "relevantFiles": [
+        "src/index.ts"
+      ],
+      "createdAt": 1793284344467,
+      "updatedAt": 1793284344467
+    },
+    {
+      "id": "task_demo_script",
+      "title": "Draft 2-minute demo presentation script",
+      "description": "Outline the problem, solution, architecture, and live demo steps for judges.",
+      "acceptanceCriteria": "Clear narrative under 2 minutes.",
+      "status": "To Do",
+      "priority": "High",
+      "assignee": "",
+      "dueDate": "2026-10-30T02:32:24.467Z",
+      "milestoneId": "demo",
+      "blockedReason": "",
+      "relevantFiles": [
+        "README.md"
+      ],
+      "createdAt": 1793284344467,
+      "updatedAt": 1793284344467
+    }
+  ],
+  "milestones": [
+    {
+      "id": "idea",
+      "title": "Idea Validation & Scope",
+      "description": "Problem definition, target user, and core feature list finalized.",
+      "targetDeadline": "2026-10-29T16:32:24.467Z",
+      "completed": true,
+      "completedAt": 1793284344467
+    },
+    {
+      "id": "mvp",
+      "title": "MVP Complete",
+      "description": "Working prototype with core value proposition demonstrable.",
+      "targetDeadline": "2026-10-30T00:32:24.467Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "integration",
+      "title": "Integration Complete",
+      "description": "Frontend, backend, APIs, and data models connected.",
+      "targetDeadline": "2026-10-30T06:32:24.467Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "testing",
+      "title": "Testing & Hardening",
+      "description": "Edge cases checked, error handling added, zero crashes on main path.",
+      "targetDeadline": "2026-10-30T10:32:24.467Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "demo",
+      "title": "Demo & Pitch Ready",
+      "description": "Slides finalized and video walkthrough / live demo rehearsed.",
+      "targetDeadline": "2026-10-30T12:32:24.467Z",
+      "completed": false,
+      "completedAt": null
+    },
+    {
+      "id": "submission",
+      "title": "Submission Finalized",
+      "description": "Devpost / portal entry submitted, links verified, repo public.",
+      "targetDeadline": "2026-10-30T14:32:24.467Z",
+      "completed": false,
+      "completedAt": null
+    }
+  ],
+  "deliverables": [
+    {
+      "id": "del_repo",
+      "label": "GitHub Repository",
+      "url": "",
+      "completed": false
+    },
+    {
+      "id": "del_demo",
+      "label": "Live Demo URL",
+      "url": "",
+      "completed": false
+    },
+    {
+      "id": "del_slides",
+      "label": "Pitch Presentation / Slides",
+      "url": "",
+      "completed": false
+    },
+    {
+      "id": "del_docs",
+      "label": "Documentation & Architecture",
+      "url": "",
+      "completed": false
+    },
+    {
+      "id": "del_portal",
+      "label": "Hackathon Submission Link",
+      "url": "",
+      "completed": false
+    }
+  ],
+  "pulse": [
+    {
+      "id": "pulse_1793284344467",
+      "timestamp": 1793284344467,
+      "type": "setup_created",
+      "author": "Samridh",
+      "message": "Hackathon workspace initialized.",
+      "details": {}
+    }
+  ],
+  "notes": {
+    "problemStatement": "",
+    "proposedSolution": "",
+    "architectureDecisions": "",
+    "apiContracts": "",
+    "knownRisks": "",
+    "demoScript": "",
+    "lastUpdatedBy": "Samridh",
+    "updatedAt": 1793284344467
+  }
+}

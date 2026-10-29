@@ -4,7 +4,6 @@
   "description": "Live shared coding sessions with permission-based live editing",
   "version": "0.0.1",
   "publisher": "team-parallel",
-  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/samxshetty/hackloop-parallel"

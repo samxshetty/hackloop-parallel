@@ -53,8 +53,8 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
   const mvpName = mvpParticipant ? escapeHtml(mvpParticipant.name) : 'TEAM';
 
   const cspMeta = isStandalone
-    ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}' 'unsafe-inline';">`
-    : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}';">`;
+    ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}' 'unsafe-inline';">`
+    : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}';">`;
 
   // Render People rows
   const renderPeopleRows = (participants: WrappedParticipant[]) =>
@@ -1450,6 +1450,118 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
         } else if (e.key === 'ArrowLeft') {
           e.preventDefault();
           showSlide(currentSlide - 1);
+        }
+      });
+
+      const vscode = typeof acquireVsCodeApi === 'function' ? acquireVsCodeApi() : null;
+
+      function exportToHtml() {
+        if (vscode) {
+          vscode.postMessage({ command: 'exportHtml' });
+        } else {
+          const blob = new Blob([document.documentElement.outerHTML], { type: 'text/html;charset=utf-8' });
+          const a = document.createElement('a');
+          a.download = 'parallel-session-wrapped.html';
+          a.href = URL.createObjectURL(blob);
+          a.click();
+        }
+      }
+
+      function handlePngFailure(err) {
+        console.warn('PNG rasterization failed:', err);
+        if (vscode) {
+          vscode.postMessage({ command: 'pngFailed' });
+        } else {
+          alert('PNG rasterization is not supported in this browser. Falling back to HTML export.');
+          exportToHtml();
+        }
+      }
+
+      function exportToPng() {
+        try {
+          const summaryCard = document.getElementById('summary-card');
+          const bgCanvas = document.querySelector('.bg-canvas');
+          const styleEl = document.querySelector('style');
+          if (!summaryCard) throw new Error('Summary card element not found');
+
+          const cardClone = summaryCard.cloneNode(true);
+          const bgClone = bgCanvas ? bgCanvas.cloneNode(true) : null;
+          const styles = styleEl ? styleEl.innerHTML : '';
+
+          const container = document.createElement('div');
+          container.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
+          container.style.cssText = 'width:720px;height:1280px;position:relative;background-color:#0B0720;overflow:hidden;box-sizing:border-box;color:#ffffff;font-family:\'Space Grotesk\', sans-serif;';
+          if (bgClone) container.appendChild(bgClone);
+
+          const innerWrap = document.createElement('div');
+          innerWrap.style.cssText = 'position:absolute;inset:0;padding:34px 36px 36px;display:flex;flex-direction:column;z-index:10;';
+          innerWrap.appendChild(cardClone);
+          container.appendChild(innerWrap);
+
+          const htmlString = '<style>' + styles + '</style>' + container.outerHTML;
+          const svgString = '<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280">' +
+            '<foreignObject width="100%" height="100%">' +
+            htmlString +
+            '</foreignObject>' +
+            '</svg>';
+
+          const canvas = document.createElement('canvas');
+          canvas.width = 720;
+          canvas.height = 1280;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) throw new Error('Canvas 2D context not available');
+
+          const svgBlob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
+          const url = URL.createObjectURL(svgBlob);
+          const img = new Image();
+
+          img.onload = function() {
+            try {
+              ctx.drawImage(img, 0, 0, 720, 1280);
+              URL.revokeObjectURL(url);
+              const dataUrl = canvas.toDataURL('image/png');
+              if (vscode) {
+                vscode.postMessage({ command: 'savePng', data: dataUrl });
+              } else {
+                const a = document.createElement('a');
+                a.download = 'parallel-session-wrapped.png';
+                a.href = dataUrl;
+                a.click();
+              }
+            } catch (err) {
+              URL.revokeObjectURL(url);
+              handlePngFailure(err);
+            }
+          };
+
+          img.onerror = function(err) {
+            URL.revokeObjectURL(url);
+            handlePngFailure(err);
+          };
+
+          img.src = url;
+        } catch (err) {
+          handlePngFailure(err);
+        }
+      }
+
+      // Replay and Export button handlers
+      document.addEventListener('click', (e) => {
+        const target = e.target;
+        if (!target) return;
+        if (target.closest('.btn-replay')) {
+          e.preventDefault();
+          if (vscode) {
+            vscode.postMessage({ command: 'openReplay' });
+          } else {
+            alert('Session replays are available inside the Parallel VS Code extension.');
+          }
+        } else if (target.closest('#btn-export-html')) {
+          e.preventDefault();
+          exportToHtml();
+        } else if (target.closest('#btn-export-png')) {
+          e.preventDefault();
+          exportToPng();
         }
       });
 

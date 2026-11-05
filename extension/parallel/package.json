@@ -123,6 +123,11 @@
           "type": "string",
           "default": "",
           "description": "Shell to run in the shared terminal (empty: cmd.exe on Windows, $SHELL elsewhere)"
+        },
+        "parallel.wrapped.useGithubAvatar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to use GitHub profile avatars in Session Wrapped when signed into VS Code."
         }
       }
     }

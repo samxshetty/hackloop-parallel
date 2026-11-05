@@ -10,6 +10,7 @@ import { ParticipantsProvider } from './sidebar';
 import { registerTerminal, closeTerminals } from './terminal';
 import { WrappedData } from './wrapped/types';
 import { countSessionCommits } from './wrapped/gitStats';
+import { getSilentGithubLogin } from './wrapped/avatar';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024;
@@ -475,7 +476,8 @@ export function activate(context: vscode.ExtensionContext) {
         saveLastName(session.name);
         hostDoc = editor.document;
         hostFileName = baseName(editor.document.fileName);
-        send({ t: 'create', name: session.name });
+        const githubLogin = await getSilentGithubLogin();
+        send({ t: 'create', name: session.name, githubLogin });
     });
 
 
@@ -519,7 +521,8 @@ export function activate(context: vscode.ExtensionContext) {
         session.name = name.trim().slice(0, 30);
         saveLastName(session.name);
         saveLastSessionCode(code.trim().toUpperCase());
-        send({ t: 'join', code: code.trim().toUpperCase(), name: session.name });
+        const githubLogin = await getSilentGithubLogin();
+        send({ t: 'join', code: code.trim().toUpperCase(), name: session.name, githubLogin });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
 

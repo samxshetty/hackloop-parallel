@@ -77,11 +77,11 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
               <span class="role-badge role-${role.toLowerCase()}">${role}</span>
             </div>
             <div class="bar-track" aria-hidden="true">
-              <div class="bar-fill" style="width: ${pct}%; background-color: ${color};"></div>
+              <div class="bar-fill" data-pct="${pct}" style="width: 0%; background-color: ${color};"></div>
             </div>
           </div>
           <div class="person-stats-col">
-            <span class="person-pct">${pct}%</span>
+            <span class="person-pct" data-target="${pct}">${pct}%</span>
             <span class="person-commits">${commitsText}</span>
           </div>
         </div>
@@ -111,9 +111,9 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
     : [2, 5, 12, 24, 38, 42, 28, 15, 8, 3];
   const maxSpark = Math.max(...sparkline, 1);
   const sparklineBarsHtml = sparkline
-    .map((val) => {
+    .map((val, idx) => {
       const heightPct = Math.max(8, Math.round((val / maxSpark) * 100));
-      return `<div class="spark-bar" style="height: ${heightPct}%;" title="${val} edits"></div>`;
+      return `<div class="spark-bar" data-height="${heightPct}" style="height: 0%; transition-delay: ${idx * 35}ms;" title="${val} edits"></div>`;
     })
     .join('\n');
 
@@ -271,13 +271,13 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
       z-index: 10;
       opacity: 0;
       pointer-events: none;
-      transition: opacity 0.3s ease, transform 0.3s ease;
-      transform: scale(0.98);
+      transition: opacity 0.35s cubic-bezier(0.16, 1, 0.3, 1), transform 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+      transform: scale(0.96) translateY(8px);
     }
     .slide.active {
       opacity: 1;
       pointer-events: auto;
-      transform: scale(1);
+      transform: scale(1) translateY(0);
     }
 
     /* Header Row */
@@ -508,7 +508,9 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
     .bar-fill {
       height: 100%;
       border-radius: 999px;
-      min-width: 6px;
+      min-width: 0px;
+      width: 0%;
+      transition: width 0.9s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .person-stats-col {
       text-align: right;
@@ -545,7 +547,20 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
       justify-content: space-between;
       min-height: 140px;
       box-shadow: 0 10px 24px rgba(0, 0, 0, 0.35);
+      transition: transform 0.45s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.4s ease;
     }
+    .slide:not(.active) .stat-tile {
+      opacity: 0;
+      transform: scale(0.82) translateY(24px);
+    }
+    .slide.active .stat-tile {
+      opacity: 1;
+      transform: scale(1) translateY(0);
+    }
+    .slide.active .stat-tile:nth-child(1) { transition-delay: 0.08s; }
+    .slide.active .stat-tile:nth-child(2) { transition-delay: 0.18s; }
+    .slide.active .stat-tile:nth-child(3) { transition-delay: 0.28s; }
+    .slide.active .stat-tile:nth-child(4) { transition-delay: 0.38s; }
     .stat-tile.tile-magenta {
       background-color: var(--magenta);
       color: var(--white);
@@ -606,7 +621,9 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
       flex: 1;
       background: linear-gradient(180deg, var(--cyan) 0%, var(--teal) 100%);
       border-radius: 4px 4px 0 0;
-      min-height: 6px;
+      min-height: 4px;
+      height: 0%;
+      transition: height 0.75s cubic-bezier(0.16, 1, 0.3, 1);
     }
     .sparkline-meta {
       display: flex;
@@ -814,9 +831,23 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
     .nav-tap-right { right: 0; }
 
     @media (prefers-reduced-motion: reduce) {
-      .slide, .bar-fill, .story-progress-fill, .btn-replay, .btn-export {
+      *, ::before, ::after {
+        animation-duration: 0.001ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.001ms !important;
+      }
+      .slide:not(.active) .stat-tile,
+      .slide.active .stat-tile {
+        opacity: 1 !important;
+        transform: none !important;
         transition: none !important;
-        animation: none !important;
+      }
+      .slide {
+        transition: none !important;
+        transform: none !important;
+      }
+      .bar-fill, .spark-bar {
+        transition: none !important;
       }
     }
   </style>
@@ -900,7 +931,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
         <div class="time-banner-wrap">
           <div class="time-banner">
-            <span class="time-big" id="count-duration">${durationFormatted}</span>
+            <span class="time-big" id="count-duration" data-target-ms="${data.durationMs}">${durationFormatted}</span>
             <span class="time-label">TOTAL SESSION TIME</span>
           </div>
         </div>
@@ -973,11 +1004,11 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
         <div class="stat-grid">
           <div class="stat-tile tile-magenta">
-            <div class="stat-number" id="num-commits">${data.totals.commits}</div>
+            <div class="stat-number count-up" id="num-commits" data-target="${data.totals.commits}">${data.totals.commits}</div>
             <div class="stat-label">COMMITS PUSHED</div>
           </div>
           <div class="stat-tile tile-white">
-            <div class="stat-number" id="num-secrets">${data.totals.secretsMasked}</div>
+            <div class="stat-number count-up" id="num-secrets" data-target="${data.totals.secretsMasked}">${data.totals.secretsMasked}</div>
             <div class="stat-label">SECRETS MASKED</div>
           </div>
           <div class="stat-tile tile-violet">
@@ -985,7 +1016,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
             <div class="stat-label">LONGEST FOCUS</div>
           </div>
           <div class="stat-tile tile-cyan">
-            <div class="stat-number" id="num-edits-ok">${data.totals.editRequestsApproved}/${data.totals.editRequestsTotal}</div>
+            <div class="stat-number count-up-ratio" id="num-edits-ok" data-approved="${data.totals.editRequestsApproved}" data-total="${data.totals.editRequestsTotal}">${data.totals.editRequestsApproved}/${data.totals.editRequestsTotal}</div>
             <div class="stat-label">EDIT REQUESTS OK</div>
           </div>
         </div>
@@ -1018,7 +1049,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
         <div class="time-banner-wrap">
           <div class="time-banner" style="background-color: var(--cyan);">
-            <span class="time-big" id="num-peak-edits">${data.totals.peakMinuteEdits}</span>
+            <span class="time-big count-up" id="num-peak-edits" data-target="${data.totals.peakMinuteEdits}">${data.totals.peakMinuteEdits}</span>
             <span class="time-label">EDITS IN PEAK MINUTE</span>
           </div>
         </div>
@@ -1120,11 +1151,11 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
           <div class="stat-grid">
             <div class="stat-tile tile-magenta">
-              <div class="stat-number">${data.totals.commits}</div>
+              <div class="stat-number count-up" data-target="${data.totals.commits}">${data.totals.commits}</div>
               <div class="stat-label">COMMITS</div>
             </div>
             <div class="stat-tile tile-white">
-              <div class="stat-number">${data.totals.secretsMasked}</div>
+              <div class="stat-number count-up" data-target="${data.totals.secretsMasked}">${data.totals.secretsMasked}</div>
               <div class="stat-label">SECRETS MASKED</div>
             </div>
             <div class="stat-tile tile-violet">
@@ -1132,7 +1163,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
               <div class="stat-label">LONGEST FOCUS</div>
             </div>
             <div class="stat-tile tile-cyan">
-              <div class="stat-number">${data.totals.editRequestsApproved}/${data.totals.editRequestsTotal}</div>
+              <div class="stat-number count-up-ratio" data-approved="${data.totals.editRequestsApproved}" data-total="${data.totals.editRequestsTotal}">${data.totals.editRequestsApproved}/${data.totals.editRequestsTotal}</div>
               <div class="stat-label">EDIT REQS OK</div>
             </div>
           </div>
@@ -1163,9 +1194,17 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
   <script nonce="${nonce}">
     (function() {
-      // Fit 720x1280 stage to viewport
+      const isReduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      const stage = document.getElementById('stage');
+      const totalSlides = 7;
+      const SLIDE_DURATION = 4500;
+      let currentSlide = 0;
+      let slideStartTime = Date.now();
+      let isPaused = false;
+      let pauseStartTime = 0;
+
+      // Fit 720x1280 stage to viewport keeping 9:16 aspect ratio
       function fitStage() {
-        const stage = document.getElementById('stage');
         if (!stage) return;
         const vw = window.innerWidth;
         const vh = window.innerHeight;
@@ -1175,12 +1214,132 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
       window.addEventListener('resize', fitStage);
       fitStage();
 
-      // Basic story setup (static shell for Commit 5)
-      let currentSlide = 0;
-      const totalSlides = 7;
+      // Format milliseconds duration for count-up
+      function fmtDuration(ms) {
+        const totalSec = Math.max(0, Math.floor(ms / 1000));
+        if (totalSec < 60) return totalSec + 's';
+        const totalMin = Math.floor(totalSec / 60);
+        if (totalMin < 60) return totalMin + 'm';
+        const h = Math.floor(totalMin / 60);
+        const m = totalMin % 60;
+        return m === 0 ? h + 'h' : h + 'h ' + m + 'm';
+      }
+
+      // Count-up helper with easeOutExpo
+      function animateValue(el, start, end, duration, formatter) {
+        if (isReduced) {
+          el.textContent = formatter ? formatter(end) : end;
+          return;
+        }
+        const startTime = performance.now();
+        function tick(now) {
+          const elapsed = now - startTime;
+          const progress = Math.min(1, elapsed / duration);
+          const ease = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
+          const current = Math.round(start + (end - start) * ease);
+          el.textContent = formatter ? formatter(current) : current;
+          if (progress < 1) {
+            requestAnimationFrame(tick);
+          }
+        }
+        requestAnimationFrame(tick);
+      }
+
+      // Trigger animations for the active slide
+      function activateSlideAnimations(slideEl) {
+        if (!slideEl) return;
+
+        // Fill bars
+        const barFills = slideEl.querySelectorAll('.bar-fill');
+        barFills.forEach(bar => {
+          const pct = bar.getAttribute('data-pct') || '0';
+          if (isReduced) {
+            bar.style.width = pct + '%';
+          } else {
+            bar.style.width = '0%';
+            requestAnimationFrame(() => {
+              bar.style.width = pct + '%';
+            });
+          }
+        });
+
+        // Sparkline bars
+        const sparkBars = slideEl.querySelectorAll('.spark-bar');
+        sparkBars.forEach(bar => {
+          const h = bar.getAttribute('data-height') || '0';
+          if (isReduced) {
+            bar.style.height = h + '%';
+          } else {
+            bar.style.height = '0%';
+            requestAnimationFrame(() => {
+              bar.style.height = h + '%';
+            });
+          }
+        });
+
+        // Person percentages count-up
+        const pcts = slideEl.querySelectorAll('.person-pct');
+        pcts.forEach(el => {
+          const target = parseInt(el.getAttribute('data-target') || '0', 10);
+          animateValue(el, 0, target, 750, v => v + '%');
+        });
+
+        // Duration count-up
+        const durEl = slideEl.querySelector('#count-duration');
+        if (durEl) {
+          const targetMs = parseInt(durEl.getAttribute('data-target-ms') || '0', 10);
+          animateValue(durEl, 0, targetMs, 850, v => fmtDuration(v));
+        }
+
+        // Generic count-up numbers (.count-up)
+        const countUps = slideEl.querySelectorAll('.count-up');
+        countUps.forEach(el => {
+          const target = parseInt(el.getAttribute('data-target') || '0', 10);
+          animateValue(el, 0, target, 800);
+        });
+
+        // Ratio count-up (.count-up-ratio)
+        const ratioEls = slideEl.querySelectorAll('.count-up-ratio');
+        ratioEls.forEach(el => {
+          const approved = parseInt(el.getAttribute('data-approved') || '0', 10);
+          const total = parseInt(el.getAttribute('data-total') || '0', 10);
+          if (isReduced) {
+            el.textContent = approved + '/' + total;
+          } else {
+            const startTime = performance.now();
+            function tickRatio(now) {
+              const progress = Math.min(1, (now - startTime) / 800);
+              const ease = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
+              const curApp = Math.round(approved * ease);
+              const curTot = Math.round(total * ease);
+              el.textContent = curApp + '/' + curTot;
+              if (progress < 1) requestAnimationFrame(tickRatio);
+            }
+            requestAnimationFrame(tickRatio);
+          }
+        });
+      }
+
+      // Reset animations when leaving a slide
+      function deactivateSlideAnimations(slideEl) {
+        if (!slideEl) return;
+        const barFills = slideEl.querySelectorAll('.bar-fill');
+        barFills.forEach(bar => { bar.style.width = '0%'; });
+        const sparkBars = slideEl.querySelectorAll('.spark-bar');
+        sparkBars.forEach(bar => { bar.style.height = '0%'; });
+      }
+
+      // Show slide
       function showSlide(index) {
         if (index < 0 || index >= totalSlides) return;
+        const prevSlide = currentSlide;
+        const prevEl = document.getElementById('slide-' + prevSlide);
+        deactivateSlideAnimations(prevEl);
+
         currentSlide = index;
+        slideStartTime = Date.now();
+        isPaused = false;
+
         for (let i = 0; i < totalSlides; i++) {
           const s = document.getElementById('slide-' + i);
           const p = document.getElementById('prog-' + i);
@@ -1189,29 +1348,114 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
             else s.classList.remove('active');
           }
           if (p) {
+            const fill = p.querySelector('.story-progress-fill');
             if (i < currentSlide) {
               p.classList.add('done');
               p.classList.remove('active');
+              if (fill) fill.style.width = '100%';
             } else if (i === currentSlide) {
               p.classList.add('active');
               p.classList.remove('done');
+              if (fill) fill.style.width = '0%';
             } else {
               p.classList.remove('done', 'active');
+              if (fill) fill.style.width = '0%';
             }
           }
         }
+
+        const progBar = document.querySelector('.story-progress-bar');
+        if (progBar) progBar.setAttribute('aria-valuenow', String(currentSlide + 1));
+
+        const curEl = document.getElementById('slide-' + currentSlide);
+        activateSlideAnimations(curEl);
       }
 
-      document.getElementById('tap-next')?.addEventListener('click', () => showSlide(currentSlide + 1));
-      document.getElementById('tap-prev')?.addEventListener('click', () => showSlide(currentSlide - 1));
+      // Auto-advance loop via RAF
+      function loop() {
+        if (!isReduced && currentSlide < totalSlides - 1) {
+          if (!isPaused) {
+            const elapsed = Date.now() - slideStartTime;
+            const progress = Math.min(1, elapsed / SLIDE_DURATION);
+            const curProg = document.getElementById('prog-' + currentSlide);
+            if (curProg) {
+              const fill = curProg.querySelector('.story-progress-fill');
+              if (fill) fill.style.width = (progress * 100) + '%';
+            }
+            if (progress >= 1) {
+              showSlide(currentSlide + 1);
+            }
+          }
+        }
+        requestAnimationFrame(loop);
+      }
 
+      // Hold to pause
+      function onPause() {
+        if (isPaused) return;
+        isPaused = true;
+        pauseStartTime = Date.now();
+      }
+
+      function onResume() {
+        if (!isPaused) return;
+        isPaused = false;
+        slideStartTime += (Date.now() - pauseStartTime);
+      }
+
+      if (stage) {
+        stage.addEventListener('pointerdown', (e) => {
+          if (e.target && e.target.closest('button')) return;
+          onPause();
+        });
+        window.addEventListener('pointerup', onResume);
+        window.addEventListener('pointercancel', onResume);
+      }
+
+      // Tap navigation
+      const tapNext = document.getElementById('tap-next');
+      const tapPrev = document.getElementById('tap-prev');
+
+      if (tapNext) {
+        tapNext.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showSlide(currentSlide + 1);
+        });
+        tapNext.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            showSlide(currentSlide + 1);
+          }
+        });
+      }
+
+      if (tapPrev) {
+        tapPrev.addEventListener('click', (e) => {
+          e.stopPropagation();
+          showSlide(currentSlide - 1);
+        });
+        tapPrev.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            showSlide(currentSlide - 1);
+          }
+        });
+      }
+
+      // Keyboard navigation
       window.addEventListener('keydown', (e) => {
         if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'Enter') {
+          e.preventDefault();
           showSlide(currentSlide + 1);
         } else if (e.key === 'ArrowLeft') {
+          e.preventDefault();
           showSlide(currentSlide - 1);
         }
       });
+
+      // Initialize
+      showSlide(0);
+      loop();
     })();
   </script>
 </body>

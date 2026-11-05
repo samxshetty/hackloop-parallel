@@ -8,6 +8,8 @@ import { AdminDashboardManager } from './dashboard/panel';
 import { HackathonManager } from './hackathon/panel';
 import { ParticipantsProvider } from './sidebar';
 import { registerTerminal, closeTerminals } from './terminal';
+import { WrappedData } from './wrapped/types';
+import { countSessionCommits } from './wrapped/gitStats';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024;
@@ -388,13 +390,42 @@ export function activate(context: vscode.ExtensionContext) {
             await revokeLocalEditor();
         }
     });
+    let lastProcessedCommitsSessionCode: string | null = null;
+    let lastWrappedData: WrappedData | null = null;
+
+    onMessage('wrapped', async (msg) => {
+        if (!msg || !msg.data) return;
+        const data: WrappedData = msg.data;
+        lastWrappedData = data;
+
+        // If superhost, count Git commits during the session and inform the server
+        if (session.role === 'superhost' && lastProcessedCommitsSessionCode !== data.code) {
+            lastProcessedCommitsSessionCode = data.code;
+            try {
+                const gitStats = await countSessionCommits(data.startedAt, data.endedAt, data.participants);
+                send({
+                    t: 'wrapped_commits',
+                    commits: gitStats.totalCommits,
+                    participants: gitStats.participants,
+                });
+                data.totals.commits = gitStats.totalCommits;
+                for (const p of gitStats.participants) {
+                    const target = data.participants.find(tp => tp.id === p.id || tp.name === p.name);
+                    if (target) target.commits = p.commits;
+                }
+            } catch (err) {
+                console.error('Parallel: failed to count git commits', err);
+            }
+        }
+    });
+
     onMessage('ended', () => {
         const msgText = session.role === 'superhost' ? 'Session ended.' : 'The host ended the session.';
         vscode.window.showInformationMessage(msgText);
         session.role = undefined;
         updateStatus();
         resetShared();
-        disconnect();
+        setTimeout(disconnect, 4000);
     });
     onMessage('error', (msg) => {
         if (msg.msg === 'no replay') {

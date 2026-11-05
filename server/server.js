@@ -28,6 +28,7 @@ const {
   clearHackathonSession,
   getNextBestActions,
 } = require('./hackathon');
+const { computeWrapped } = require('./wrapped/stats');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -46,7 +47,36 @@ console.log(`Server running on ws://localhost:${PORT}`);
 ensureDir();
 
 const sessions = new Map(); // code -> { host, peers: [], pending: [], createdAt }
+const endedSessions = new Map(); // code -> session (kept briefly for wrapped commits)
 const badByIp = new Map();  // ip -> { count, resetAt }
+
+function getParticipantStats(session, name, defaultRole = 'guest', githubLogin = null) {
+  if (!session.participantStats) session.participantStats = new Map();
+  let stats = session.participantStats.get(name);
+  if (!stats) {
+    stats = {
+      name,
+      role: defaultRole,
+      githubLogin: typeof githubLogin === 'string' && githubLogin.trim() ? githubLogin.trim() : null,
+      charsAdded: 0,
+      charsDeleted: 0,
+      linesModified: 0,
+      activeMs: 0,
+      editRequestsTotal: 0,
+      editRequestsApproved: 0,
+      editRequestsApprovedByMe: 0,
+    };
+    session.participantStats.set(name, stats);
+  } else {
+    if (defaultRole && stats.role === 'guest' && defaultRole !== 'guest') {
+      stats.role = defaultRole;
+    }
+    if (githubLogin && !stats.githubLogin) {
+      stats.githubLogin = typeof githubLogin === 'string' && githubLogin.trim() ? githubLogin.trim() : null;
+    }
+  }
+  return stats;
+}
 
 // ---------- helpers ----------
 
@@ -172,11 +202,31 @@ function handle(ws, data) {
       clearSession(code);
       const recorder = createRecorder(code);
       recorder.addEvent('session_start', name, { role: 'superhost' });
-      sessions.set(code, { host: ws, code, peers: [], pending: [], createdAt: Date.now(), lastMaskedCount: 0, recorder, term: null });
+      const now = Date.now();
+      const session = {
+        host: ws,
+        code,
+        peers: [],
+        pending: [],
+        createdAt: now,
+        startedAt: now,
+        lastMaskedCount: 0,
+        secretsMaskedCount: 0,
+        editTimestamps: [],
+        editEvents: [],
+        editRequestsTotal: 0,
+        editRequestsApproved: 0,
+        participantStats: new Map(),
+        recorder,
+        term: null,
+      };
+      sessions.set(code, session);
       ws.role = 'superhost';
       ws.canEdit = true;
       ws.name = name;
       ws.code = code;
+      ws.githubLogin = typeof msg.githubLogin === 'string' && msg.githubLogin.trim() ? msg.githubLogin.trim() : null;
+      getParticipantStats(session, name, 'superhost', ws.githubLogin);
       send(ws, { t: 'created', code });
       break;
     }
@@ -204,6 +254,8 @@ function handle(ws, data) {
       ws.role = 'guest';
       ws.canEdit = false;
       ws.code = code;
+      ws.githubLogin = typeof msg.githubLogin === 'string' && msg.githubLogin.trim() ? msg.githubLogin.trim() : null;
+      getParticipantStats(session, name, 'guest', ws.githubLogin);
       session.pending.push({ ws, name });
       session.recorder?.addEvent('join_request', name, {});
       send(session.host, { t: 'join_request', name });
@@ -270,6 +322,49 @@ function handle(ws, data) {
       session.lastSpans = spans;
       session.lastDoc = { t: 'doc', text: rawText, file: msg.file };
       session.recorder?.addSnapshot(msg.file || 'shared.txt', maskedText);
+
+      // Track wrapped edit stats & timestamps
+      const now = Date.now();
+      if (!session.editTimestamps) session.editTimestamps = [];
+      session.editTimestamps.push(now);
+      if (count > (session.secretsMaskedCount || 0)) {
+        session.secretsMaskedCount = count;
+      }
+
+      if (prevRaw !== rawText) {
+        let start = 0;
+        while (start < prevRaw.length && start < rawText.length && prevRaw[start] === rawText[start]) {
+          start++;
+        }
+        let prevEnd = prevRaw.length;
+        let rawEnd = rawText.length;
+        while (prevEnd > start && rawEnd > start && prevRaw[prevEnd - 1] === rawText[rawEnd - 1]) {
+          prevEnd--;
+          rawEnd--;
+        }
+        const charsDeleted = prevEnd - start;
+        const charsAdded = rawEnd - start;
+        const oldMiddle = prevRaw.slice(start, prevEnd);
+        const newMiddle = rawText.slice(start, rawEnd);
+        const linesModified = Math.max(1, Math.max(
+          oldMiddle ? oldMiddle.split('\n').length : 0,
+          newMiddle ? newMiddle.split('\n').length : 0
+        ));
+
+        const pStats = getParticipantStats(session, ws.name, ws.role, ws.githubLogin);
+        pStats.charsAdded += charsAdded;
+        pStats.charsDeleted += charsDeleted;
+        pStats.linesModified += linesModified;
+
+        if (!session.editEvents) session.editEvents = [];
+        session.editEvents.push({
+          timestamp: now,
+          by: ws.name,
+          charsAdded,
+          charsDeleted,
+          linesModified,
+        });
+      }
 
       if (!isHostSender) {
         recordEdit(session, ws, prevRaw, rawText, editChange, send);
@@ -343,6 +438,8 @@ function handle(ws, data) {
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
       target.ws.role = msg.role;
+      const pRoleStats = getParticipantStats(session, target.name, msg.role, target.ws.githubLogin);
+      pRoleStats.role = msg.role;
       if (msg.role === 'host') {
         target.ws.canEdit = true;
         setRevoked(session, target.name, false, send);
@@ -372,6 +469,9 @@ function handle(ws, data) {
         fail(ws, 'already an editor');
         break;
       }
+      session.editRequestsTotal = (session.editRequestsTotal || 0) + 1;
+      const reqStats = getParticipantStats(session, ws.name, ws.role, ws.githubLogin);
+      reqStats.editRequestsTotal = (reqStats.editRequestsTotal || 0) + 1;
       session.recorder?.addEvent('edit_request', ws.name, {});
       send(session.host, { t: 'edit_request', name: ws.name });
       break;
@@ -387,6 +487,12 @@ function handle(ws, data) {
       const target = session.peers.find((p) => p.name === msg.name);
       if (!target) { fail(ws, 'no such person'); break; }
       if (msg.approve) {
+        session.editRequestsApproved = (session.editRequestsApproved || 0) + 1;
+        const targetStats = getParticipantStats(session, target.name, target.ws.role, target.ws.githubLogin);
+        targetStats.editRequestsApproved = (targetStats.editRequestsApproved || 0) + 1;
+        const hostStats = getParticipantStats(session, ws.name, ws.role, ws.githubLogin);
+        hostStats.editRequestsApprovedByMe = (hostStats.editRequestsApprovedByMe || 0) + 1;
+
         target.ws.canEdit = true;
         setRevoked(session, target.name, false, send);
         session.recorder?.addEvent('edit_granted', target.name, {});
@@ -675,6 +781,40 @@ function handle(ws, data) {
       break;
     }
 
+    case 'wrapped_commits': {
+      if (ws.role !== 'superhost') {
+        fail(ws, 'only superhost can send wrapped commits');
+        break;
+      }
+      const session = sessions.get(ws.code) || endedSessions.get(ws.code);
+      if (!session || !session.wrapped) break;
+      if (ws !== session.host) break;
+
+      const totalCommits = Math.min(10000, Math.max(0, Math.floor(Number(msg.commits) || 0)));
+      session.wrapped.totals.commits = totalCommits;
+
+      if (Array.isArray(msg.participants)) {
+        for (const pCommits of msg.participants) {
+          if (!pCommits || typeof pCommits !== 'object') continue;
+          const targetName = typeof pCommits.name === 'string' ? pCommits.name.trim().toLowerCase() : '';
+          const count = Math.min(10000, Math.max(0, Math.floor(Number(pCommits.commits) || 0)));
+          const target = session.wrapped.participants.find(
+            (p) => (targetName && p.name.toLowerCase() === targetName) || (pCommits.id && p.id === pCommits.id)
+          );
+          if (target) {
+            target.commits = count;
+          }
+        }
+      }
+
+      // Broadcast updated wrapped payload to all members
+      const recipients = session.members || everyone(session);
+      for (const w of recipients) {
+        send(w, { t: 'wrapped', data: session.wrapped });
+      }
+      break;
+    }
+
     default:
       fail(ws, 'unknown type');
   }
@@ -688,6 +828,42 @@ function terminateSession(session, endedByWs) {
   const summary = getSummary(session.recorder);
   const members = everyone(session);
   const pending = [...session.pending];
+  session.members = [...members];
+
+  // Compute authoritative Wrapped stats
+  const endedAt = Date.now();
+  const participantsList = [];
+  if (session.participantStats) {
+    for (const [name, stats] of session.participantStats.entries()) {
+      participantsList.push({
+        name,
+        role: stats.role,
+        githubLogin: stats.githubLogin,
+        charsAdded: stats.charsAdded,
+        charsDeleted: stats.charsDeleted,
+        linesModified: stats.linesModified,
+        activeMs: stats.activeMs,
+        editRequests: {
+          total: stats.editRequestsTotal,
+          approved: stats.editRequestsApproved,
+        },
+        editRequestsApprovedByMe: stats.editRequestsApprovedByMe,
+      });
+    }
+  }
+
+  const wrapped = computeWrapped({
+    code: session.code,
+    startedAt: session.startedAt || session.createdAt,
+    endedAt,
+    participants: participantsList,
+    editTimestamps: session.editTimestamps || [],
+    editEvents: session.editEvents || [],
+    secretsMasked: session.secretsMaskedCount || 0,
+    editRequestsTotal: session.editRequestsTotal || 0,
+    editRequestsApproved: session.editRequestsApproved || 0,
+  });
+  session.wrapped = wrapped;
 
   for (const w of members) {
     if (replayId) {
@@ -698,11 +874,15 @@ function terminateSession(session, endedByWs) {
     if (summary) {
       send(w, summary);
     }
+    send(w, { t: 'wrapped', data: wrapped });
     send(w, { t: 'ended' });
   }
   for (const p of pending) {
     send(p.ws, { t: 'ended' });
   }
+
+  endedSessions.set(session.code, session);
+  setTimeout(() => endedSessions.delete(session.code), 60000);
 
   clearSession(session.code);
   clearHackathonSession(session.code);

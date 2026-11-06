@@ -93,6 +93,10 @@
       {
         "command": "parallel.openWrapped",
         "title": "Parallel: Session Wrapped"
+      },
+      {
+        "command": "parallel.openProjectFile",
+        "title": "Parallel: Open Shared Project File"
       }
     ],
     "viewsContainers": {
@@ -109,6 +113,13 @@
         {
           "id": "parallel.participants",
           "name": "Participants",
+          "icon": "media/icon.svg",
+          "type": "tree",
+          "contextualTitle": "Parallel"
+        },
+        {
+          "id": "parallel.projectFiles",
+          "name": "Project Files",
           "icon": "media/icon.svg",
           "type": "tree",
           "contextualTitle": "Parallel"

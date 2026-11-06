@@ -19,12 +19,14 @@ const {
 const {
   getHackathonState,
   updateSetup,
+  updateDeadline,
   createTask,
   updateTask,
   deleteTask,
   updateMilestone,
   updateDeliverable,
   updateNotes,
+  controlTimer,
   clearHackathonSession,
   getNextBestActions,
 } = require('./hackathon');
@@ -669,11 +671,31 @@ function handle(ws, data) {
       break;
     }
 
+    case 'hackathon_update_deadline': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (ws.role !== 'superhost') {
+        fail(ws, 'Only the superhost can edit the hackathon deadline and start time');
+        break;
+      }
+      const res = updateDeadline(ws.code, msg.updates || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
     case 'hackathon_update_setup': {
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
       if (ws.role !== 'superhost' && ws.role !== 'host') {
         fail(ws, 'Only hosts can configure hackathon settings');
+        break;
+      }
+      if ((msg.setup?.deadline !== undefined || msg.setup?.startTime !== undefined) && ws.role !== 'superhost') {
+        fail(ws, 'Only the superhost can edit the hackathon deadline and start time');
         break;
       }
       const res = updateSetup(ws.code, msg.setup || {}, ws.name);
@@ -757,6 +779,22 @@ function handle(ws, data) {
         break;
       }
       const res = updateDeliverable(ws.code, msg.id, msg.updates || {}, ws.name);
+      if (!res.ok) {
+        fail(ws, res.error);
+        break;
+      }
+      sendToAll(session, { t: 'hackathon_sync', state: res.state, recommendations: getNextBestActions(res.state) });
+      break;
+    }
+
+    case 'hackathon_timer_control': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+      if (ws.role !== 'superhost') {
+        fail(ws, 'Only the superhost can control the custom timer');
+        break;
+      }
+      const res = controlTimer(ws.code, msg.action, msg.params || {}, ws.name);
       if (!res.ok) {
         fail(ws, res.error);
         break;

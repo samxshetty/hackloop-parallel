@@ -65,12 +65,14 @@ test('getLatestRecording finds most recent valid recording and skips empty or ma
     rec1.addEvent('session_start', 'Alice', {});
     rec1.finish();
     const id1 = saveRecording(rec1, tmpDir);
+    fs.utimesSync(path.join(tmpDir, id1 + '.json'), 1000, 1000);
 
     // 2. Create second recording slightly later
     const rec2 = createRecorder('SESS02');
     rec2.addEvent('session_start', 'Bob', {});
     rec2.finish();
     const id2 = saveRecording(rec2, tmpDir);
+    fs.utimesSync(path.join(tmpDir, id2 + '.json'), 2000, 2000);
 
     // 3. Create an empty file with newer mtime
     const emptyFile = path.join(tmpDir, 'ffffffffffff.json');

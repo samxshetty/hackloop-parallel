@@ -104,6 +104,15 @@ export class HackathonManager {
       this.requestServerSync();
     });
 
+    onMessage('error', (msg) => {
+      if (this.panel && msg) {
+        this.panel.webview.postMessage({
+          type: 'error',
+          message: msg.msg || msg.message || 'Operation failed',
+        });
+      }
+    });
+
     onMessage('peers', () => {
       this.postSync();
     });
@@ -160,6 +169,14 @@ export class HackathonManager {
         vscode.commands.executeCommand('parallel.requestEditAccess');
         break;
 
+      case 'update_deadline':
+        if (session.role) {
+          send({ t: 'hackathon_update_deadline', updates: msg.updates });
+        } else {
+          vscode.window.showWarningMessage('Not connected to a Parallel session.');
+        }
+        break;
+
       case 'update_setup':
         if (session.role) {
           send({ t: 'hackathon_update_setup', setup: msg.setup });
@@ -198,6 +215,28 @@ export class HackathonManager {
         } else {
           vscode.window.showWarningMessage('Not connected to a Parallel session.');
         }
+        break;
+
+      case 'timer_control':
+        if (session.role) {
+          send({ t: 'hackathon_timer_control', action: msg.action, params: msg.params });
+        } else {
+          vscode.window.showWarningMessage('Not connected to a Parallel session.');
+        }
+        break;
+
+      case 'open_url':
+        if (msg.url) {
+          try {
+            vscode.env.openExternal(vscode.Uri.parse(msg.url));
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Failed to open URL: ${err?.message || err}`);
+          }
+        }
+        break;
+
+      case 'timer_completed':
+        vscode.window.showInformationMessage(`⏱️ Hackathon Sprint Completed: ${msg.label || 'Timer'}`);
         break;
 
       case 'update_deliverable':

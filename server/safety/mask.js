@@ -7,11 +7,12 @@ const defaultPatterns = require('./patterns');
  * @param {string} text
  * @returns {Array<{start: number, end: number, kinds: Set<string>}>}
  */
-function getMaskedIntervals(text) {
+function getMaskedIntervals(text, customPatterns) {
   if (typeof text !== 'string' || text.length === 0) return [];
   const intervals = [];
+  const activePatterns = customPatterns || defaultPatterns;
 
-  for (const p of defaultPatterns) {
+  for (const p of activePatterns) {
     const regex = new RegExp(p.regex.source, p.regex.flags);
     let match;
     while ((match = regex.exec(text)) !== null) {
@@ -20,14 +21,31 @@ function getMaskedIntervals(text) {
         continue;
       }
 
-      if (p.name === 'Secret Assignment') {
+      if (p.name === 'Env Secret Assignment') {
+        const quote = match[4];
+        const val = quote ? match[5] : match[6];
+        if (val && val.length >= 6) {
+          const trimmed = val.trim();
+          if (!/^\$\{.*\}$/.test(trimmed) && !/^\$[a-zA-Z0-9_]+$/.test(trimmed)) {
+            const opIdx = match[0].search(/[=:]/);
+            const valOffset = match[0].indexOf(val, opIdx >= 0 ? opIdx : 0);
+            if (valOffset >= 0) {
+              const start = match.index + valOffset;
+              intervals.push({ start, end: start + val.length, name: p.name });
+            }
+          }
+        }
+      } else if (p.name === 'Secret Assignment') {
         const val = match[4];
         if (val && val.length >= 6) {
-          const opIdx = match[0].search(/[=:]/);
-          const valOffset = match[0].indexOf(val, opIdx >= 0 ? opIdx : 0);
-          if (valOffset >= 0) {
-            const start = match.index + valOffset;
-            intervals.push({ start, end: start + val.length, name: p.name });
+          const trimmed = val.trim();
+          if (!/^\$\{.*\}$/.test(trimmed) && !/^\$[a-zA-Z0-9_]+$/.test(trimmed)) {
+            const opIdx = match[0].search(/[=:]/);
+            const valOffset = match[0].indexOf(val, opIdx >= 0 ? opIdx : 0);
+            if (valOffset >= 0) {
+              const start = match.index + valOffset;
+              intervals.push({ start, end: start + val.length, name: p.name });
+            }
           }
         }
       } else {
@@ -79,7 +97,7 @@ function maskSecrets(text, customPatterns) {
   }
 
   try {
-    const merged = getMaskedIntervals(text);
+    const merged = getMaskedIntervals(text, customPatterns);
     if (merged.length === 0) {
       return { text, count: 0, kinds: [], spans: [] };
     }

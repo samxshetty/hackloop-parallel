@@ -21,6 +21,7 @@ const {
   isSensitiveFile,
   isExcludedPath,
 } = require('./project/paths');
+const defaultPatterns = require('./safety/patterns');
 const { maskSecrets } = require('./safety/mask');
 const { reconcileGuestEdit, getChangeRegion } = require('./safety/edit-guard');
 const { recordEdit, getContributions, clearSession: clearContribSession } = require('./safety/contributions');
@@ -618,10 +619,122 @@ function runMultiFileSafetyAndLedgerTests() {
   console.log('✔ All Multi-File Safety & Ledger Aggregation Unit Tests Passed!\n');
 }
 
+// ==========================================
+// 1D. UNIT TESTS FOR SAFETY PATTERNS (AQ & ENV-STYLE SECRETS)
+// ==========================================
+
+function runSafetyPatternTests() {
+  console.log('Running Safety Patterns (AQ & Env-Style Secrets) Unit Tests...');
+
+  // 1. Regression test: verify all 10 original patterns still exist and match
+  assert(defaultPatterns.length >= 10, 'Must have at least 10 patterns');
+  const original10Tests = [
+    { name: 'AWS Access Key', input: 'AKIAIOSFODNN7EXAMPLE' },
+    { name: 'OpenAI / Anthropic API Key', input: 'sk-proj-1234567890abcdef1234567890abcdef' },
+    { name: 'Stripe API Key', input: ['sk','live','1234567890abcdef12345678'].join('_') },
+    { name: 'GitHub Token', input: 'ghp_1234567890abcdefghijklmnopqrstuvwxyz' },
+    { name: 'Google API Key', input: 'AIzaSyD-1234567890abcdef1234567890abcde' },
+    { name: 'Slack Token', input: ['xoxb','1234567890','1234567890123','abcdefghijklmnop'].join('-') },
+    { name: 'JSON Web Token', input: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6IkpvaG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c' },
+    { name: 'PEM Private Key', input: '-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0...\n-----END RSA PRIVATE KEY-----' },
+    { name: 'Database URL', input: 'postgres://user:pass1234@localhost:5432/mydb' },
+    { name: 'Secret Assignment', input: 'password = "secret12345"' },
+  ];
+
+  for (const t of original10Tests) {
+    const p = defaultPatterns.find((item) => item.name === t.name);
+    assert(p, `Original pattern "${t.name}" must exist`);
+    const regex = new RegExp(p.regex.source, p.regex.flags);
+    assert(regex.test(t.input), `Original pattern "${t.name}" must match: ${t.input}`);
+  }
+
+  // 2. Google API Key (AQ) pattern tests
+  const aqPattern = defaultPatterns.find((p) => p.name === 'Google API Key (AQ)');
+  assert(aqPattern, 'Google API Key (AQ) pattern must exist');
+  assert(new RegExp(aqPattern.regex.source).test('AQ.Ab8RN6LQ1234567890abcdef'), 'AQ key must match standalone');
+  assert(new RegExp(aqPattern.regex.source).test('"AQ.Ab8RN6LQ1234567890abcdef"'), 'AQ key must match in quotes');
+  assert(!new RegExp(aqPattern.regex.source).test('AQ.short'), 'Short AQ key under 20 chars must not match');
+  assert(!new RegExp(aqPattern.regex.source).test('notAQ.Ab8RN6LQ1234567890abcdef'), 'Preceded by word char must not match');
+
+  // Standalone AQ masking
+  const aqMask = maskSecrets('const key = "AQ.Ab8RN6LQ1234567890abcdef";');
+  assert(aqMask.count > 0);
+  assert.strictEqual(aqMask.text, 'const key = "•••••••••••••••••••••••••••";');
+
+  // 3. Generic env-style assignment pattern tests
+  const envCases = [
+    { text: 'GEMINI_API_KEY="AQ.Ab8RN6LQ1234567890abcdef"', expected: 'GEMINI_API_KEY="•••••••••••••••••••••••••••"' },
+    { text: 'GEMINI_API_KEY=AQ.Ab8RN6LQ1234567890abcdef', expected: 'GEMINI_API_KEY=•••••••••••••••••••••••••••' },
+    { text: 'export GEMINI_API_KEY="AQ.Ab8RN6LQ1234567890abcdef"', expected: 'export GEMINI_API_KEY="•••••••••••••••••••••••••••"' },
+    { text: 'MY_DB_PASSWORD="changeme"', expected: 'MY_DB_PASSWORD="••••••••"' },
+    { text: 'MY_DB_PASSWORD=changeme', expected: 'MY_DB_PASSWORD=••••••••' },
+    { text: 'authToken: "abcdef123456"', expected: 'authToken: "••••••••••••"' },
+    { text: 'authToken: abcdef123456', expected: 'authToken: ••••••••••••' },
+    { text: 'FTP_PASSWD="my_secure_passwd"', expected: 'FTP_PASSWD="••••••••••••••••"' },
+    { text: 'DB_PWD=secret_pwd_123', expected: 'DB_PWD=••••••••••••••' },
+    { text: 'USER_CREDENTIALS="my_credentials_xyz"', expected: 'USER_CREDENTIALS="••••••••••••••••••"' },
+    { text: 'APP_PRIVATE_KEY="my_secret_key_12345"', expected: 'APP_PRIVATE_KEY="•••••••••••••••••••"' },
+    { text: 'CLIENT_SECRET=my_client_secret_999', expected: 'CLIENT_SECRET=••••••••••••••••••••' },
+  ];
+
+  for (const c of envCases) {
+    const m = maskSecrets(c.text);
+    assert.strictEqual(m.text, c.expected, `Masking failed for ${c.text}`);
+    assert.strictEqual(m.text.length, c.text.length, 'Length must be preserved');
+    assert(m.count > 0, 'Must have at least 1 masked interval');
+  }
+
+  // 4. Non-secrets avoidance (empty, ${VAR}, <6 chars, unrelated keys)
+  const nonSecretCases = [
+    'EMPTY_KEY=""',
+    'EMPTY_KEY=\'\'',
+    'EMPTY_KEY=',
+    'KEY="${VAR}"',
+    'KEY=\'${VAR}\'',
+    'KEY=${VAR}',
+    'KEY="${DB_PASS:-secret}"',
+    'KEY=$DB_PASS',
+    'SHORT_KEY="12345"',
+    'SHORT_KEY=12345',
+    'SHORT_KEY="admin"',
+    'SHORT_KEY=admin',
+    'PORT=8080',
+    'NODE_ENV=production',
+    'DATABASE_HOST=localhost',
+  ];
+
+  for (const ns of nonSecretCases) {
+    const m = maskSecrets(ns);
+    assert.strictEqual(m.count, 0, `Non-secret should not be masked: ${ns}`);
+    assert.strictEqual(m.text, ns, `Non-secret text should not change: ${ns}`);
+  }
+
+  // 5. Edit guard behavior with env-style secrets
+  const envFileRaw = 'PORT=8080\nGEMINI_API_KEY="AQ.Ab8RN6LQ1234567890abcdef"\nHOST=localhost\n';
+  const envFileMasked = maskSecrets(envFileRaw);
+  assert(envFileMasked.count > 0);
+
+  // Tamper edit inside masked bullets
+  const tamperedEnv = envFileMasked.text.replace('•••••••••••••••••••••••••••', 'AQ.MODIFIED_VALUE_12345678');
+  const resTamper = reconcileGuestEdit(envFileRaw, envFileMasked.text, envFileMasked.spans, tamperedEnv);
+  assert.strictEqual(resTamper.ok, false, 'Tampered secret in env file must be rejected');
+  assert.strictEqual(resTamper.error, "That value is hidden and can't be edited");
+
+  // Safe edit outside masked bullets
+  const safeEnv = envFileMasked.text.replace('PORT=8080', 'PORT=3000');
+  const resSafe = reconcileGuestEdit(envFileRaw, envFileMasked.text, envFileMasked.spans, safeEnv);
+  assert.strictEqual(resSafe.ok, true, 'Safe edit outside secret in env file should be accepted');
+  assert(resSafe.rawNew.includes('PORT=3000'));
+  assert(resSafe.rawNew.includes('AQ.Ab8RN6LQ1234567890abcdef'), 'Raw AQ secret must be preserved');
+
+  console.log('✔ All Safety Patterns (AQ & Env-Style Secrets) Unit Tests Passed!\n');
+}
+
 async function main() {
   runWrappedUnitTests();
   runProjectPathsUnitTests();
   runMultiFileSafetyAndLedgerTests();
+  runSafetyPatternTests();
   await runSocketTestsIfAvailable();
   console.log('PASS');
   process.exit(0);

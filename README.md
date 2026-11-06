@@ -57,7 +57,7 @@ hackloop-parallel/
     ├── project/
     │   └── paths.js             # Pure path sanitizer and exclusion matcher
     ├── safety/
-    │   ├── mask.js              # Secret detection and masking engine (10 patterns)
+    │   ├── mask.js              # Secret detection and masking engine (12 patterns)
     │   ├── edit-guard.js        # Three-way edit reconciliation & secret collision guard
     │   ├── contributions.js     # Per-participant contribution ledger across files
     │   └── patterns.js          # Regex patterns for API keys, tokens, and credentials

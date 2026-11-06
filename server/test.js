@@ -21,6 +21,9 @@ const {
   isSensitiveFile,
   isExcludedPath,
 } = require('./project/paths');
+const { maskSecrets } = require('./safety/mask');
+const { reconcileGuestEdit, getChangeRegion } = require('./safety/edit-guard');
+const { recordEdit, getContributions, clearSession: clearContribSession } = require('./safety/contributions');
 
 // ==========================================
 // 1. UNIT TESTS FOR SESSION WRAPPED STATS
@@ -323,6 +326,53 @@ async function runSocketTestsIfAvailable() {
     errors.push('guest doc was delivered to host: ' + JSON.stringify(noDelivery.got));
   }
 
+  // --- Multi-file socket flows ---
+  // Host uploads project_manifest
+  send(host, {
+    t: 'project_manifest',
+    manifest: [
+      { path: 'src/app.js', size: 100 },
+      { path: 'src/secret.js', size: 200 },
+    ],
+  });
+  const updateMsg = await nextMsg(guest, 'project_update');
+  if (updateMsg.t !== 'project_update' || !Array.isArray(updateMsg.manifest) || updateMsg.manifest.length !== 2) {
+    errors.push('project_update failed: ' + JSON.stringify(updateMsg));
+  }
+
+  // Guest requests file outside manifest -> rejected
+  send(guest, { t: 'file_request', path: 'untracked/secret.pem' });
+  const errResp = await nextMsg(guest, 'error');
+  if (errResp.t !== 'error' || errResp.msg !== 'file not in manifest') {
+    errors.push('expected file not in manifest error, got: ' + JSON.stringify(errResp));
+  }
+
+  // Host sends file_content with a secret
+  send(host, {
+    t: 'file_content',
+    files: [
+      { path: 'src/app.js', text: 'export const hello = "world";' },
+      { path: 'src/secret.js', text: 'const key = "sk-proj-1234567890abcdef1234567890abcdef";' },
+    ],
+  });
+
+  // Small delay for server to process file_content
+  await new Promise((r) => setTimeout(r, 100));
+
+  // Guest requests valid file from manifest -> receives masked text in file_response
+  send(guest, { t: 'file_request', path: 'src/secret.js' });
+  const fileResp = await nextMsg(guest, 'file_response');
+  if (fileResp.t !== 'file_response' || fileResp.path !== 'src/secret.js' || !fileResp.text.includes('••••••••') || fileResp.text.includes('sk-proj-')) {
+    errors.push('file_response failed or leaked secret: ' + JSON.stringify(fileResp));
+  }
+
+  // Backward compatibility: doc without path defaults to active file
+  send(host, { t: 'doc', text: 'backward compatible doc' });
+  const docMsg2 = await nextMsg(guest, 'doc');
+  if (docMsg2.t !== 'doc' || docMsg2.text !== 'backward compatible doc' || (!docMsg2.path && !docMsg2.file)) {
+    errors.push('backward compatible doc failed: ' + JSON.stringify(docMsg2));
+  }
+
   host.close();
   guest.close();
 
@@ -485,9 +535,93 @@ function runProjectPathsUnitTests() {
   console.log('✔ All Project Paths & Exclusions Unit Tests Passed!\n');
 }
 
+// ==========================================
+// 1C. UNIT TESTS FOR MULTI-FILE SAFETY & LEDGER AGGREGATION
+// ==========================================
+
+function runMultiFileSafetyAndLedgerTests() {
+  console.log('Running Multi-File Safety & Ledger Aggregation Unit Tests...');
+
+  // 1. Multi-file masking test
+  const fileAText = "const apiKey = 'sk-proj-1234567890abcdef1234567890abcdef';\nconst x = 1;\n";
+  const fileBText = "const myAwsAccessKey = 'AKIAIOSFODNN7EXAMPLE';\nconst secret = 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY';\nPORT=8080;\n";
+
+  const maskA = maskSecrets(fileAText);
+  const maskB = maskSecrets(fileBText);
+
+  assert(maskA.count > 0, 'File A should have detected secret');
+  assert(maskA.spans.length > 0, 'File A should have secret spans');
+  assert(maskA.text.includes('••••••••'), 'File A secret should be masked');
+  assert(maskA.text.includes('const x = 1;'), 'File A non-secret should be intact');
+
+  assert(maskB.count > 0, 'File B should have detected secret');
+  assert(maskB.spans.length > 0, 'File B should have secret spans');
+  assert(maskB.text.includes('••••••••'), 'File B secret should be masked');
+  assert(maskB.text.includes('PORT=8080;'), 'File B non-secret should be intact');
+
+  // Verify spans are distinct and appropriate for each file
+  assert.notStrictEqual(maskA.spans[0].start, maskB.spans[0].start);
+
+  // 2. Per-file edit guard: edits in File 1 vs hidden secret in File 2
+  const raw1 = 'function add(a, b) {\n  return a + b;\n}';
+  const new1 = 'function add(a, b) {\n  return a + b + 0;\n}';
+  const res1 = reconcileGuestEdit(raw1, raw1, [], new1);
+  assert.strictEqual(res1.ok, true, 'Clean file edit should be accepted');
+  assert.strictEqual(res1.rawNew, new1);
+
+  // File 2 has secret
+  const raw2 = 'const token = "ghp_1234567890abcdefghijklmnopqrstuvwxyz";\nconst active = true;\n';
+  const mask2 = maskSecrets(raw2);
+  assert(mask2.count > 0);
+
+  // Tampering with masked secret span
+  const tampered2 = mask2.text.replace('••••••••••••••••••••••••••••••••••••', 'ghp_HACKED_VALUE_1234567890');
+  const resTamper = reconcileGuestEdit(raw2, mask2.text, mask2.spans, tampered2);
+  assert.strictEqual(resTamper.ok, false, 'Tampered secret in second file must be rejected');
+  assert.strictEqual(resTamper.error, "That value is hidden and can't be edited");
+
+  // Safe edit in File 2 outside secret
+  const safe2 = mask2.text.replace('active = true;', 'active = false;');
+  const resSafe = reconcileGuestEdit(raw2, mask2.text, mask2.spans, safe2);
+  assert.strictEqual(resSafe.ok, true, 'Safe edit in second file should be accepted');
+  assert(resSafe.rawNew.includes('ghp_1234567890abcdefghijklmnopqrstuvwxyz'), 'Raw secret must be preserved');
+  assert(resSafe.rawNew.includes('active = false;'), 'Safe edit must be reflected');
+
+  // 3. Ledger aggregation across two files
+  const testCode = 'TEST_MULTI_FILE_LEDGER';
+  clearContribSession(testCode);
+
+  const sessionObj = { code: testCode, host: { code: testCode } };
+  const guestWs = { name: 'Carol', role: 'guest', canEdit: true, code: testCode };
+
+  // Edit in file 1
+  const f1Old = 'line1\n';
+  const f1New = 'line1\nline2\nline3\n'; // 2 lines added
+  const change1 = getChangeRegion(f1Old, f1New);
+  recordEdit(sessionObj, guestWs, f1Old, f1New, change1, () => {});
+
+  // Edit in file 2
+  const f2Old = 'const x = 1;\n';
+  const f2New = 'const x = 1;\nconst y = 2;\nconst z = 3;\n'; // 2 lines added
+  const change2 = getChangeRegion(f2Old, f2New);
+  recordEdit(sessionObj, guestWs, f2Old, f2New, change2, () => {});
+
+  const contributions = getContributions(testCode);
+  const carolContrib = contributions.find((c) => c.name === 'Carol');
+  assert(carolContrib, 'Carol should be in contributions');
+  assert.strictEqual(carolContrib.lines, 6, 'Lines changed should aggregate across both files (3 + 3 = 6)');
+  assert(carolContrib.edits >= 1, 'Edits count should be tracked');
+  assert.strictEqual(carolContrib.revoked, false);
+
+  clearContribSession(testCode);
+
+  console.log('✔ All Multi-File Safety & Ledger Aggregation Unit Tests Passed!\n');
+}
+
 async function main() {
   runWrappedUnitTests();
   runProjectPathsUnitTests();
+  runMultiFileSafetyAndLedgerTests();
   await runSocketTestsIfAvailable();
   console.log('PASS');
   process.exit(0);

@@ -5,6 +5,7 @@ export interface Peer {
     name: string;
     role: string;
     canEdit?: boolean;
+    currentFile?: string;
 }
 
 /**
@@ -29,13 +30,25 @@ export class ParticipantsProvider implements vscode.TreeDataProvider<Peer> {
     }
 
     /**
+     * Update the participant's current active file.
+     */
+    public updatePeerFile(name: string, file?: string): void {
+        const p = this.peers.find((x) => x.name.toLowerCase() === name.toLowerCase());
+        if (p) {
+            p.currentFile = file;
+            this._onDidChangeTreeData.fire();
+        }
+    }
+
+    /**
      * Return the visual representation for each participant row in the tree view.
      */
     public getTreeItem(element: Peer): vscode.TreeItem {
         const item = new vscode.TreeItem(element.name, vscode.TreeItemCollapsibleState.None);
 
-        // Label is the participant's name, description is their role
-        item.description = element.role;
+        const fileName = element.currentFile ? element.currentFile.split(/[\\/]/).pop() : '';
+        const fileDesc = fileName ? ` · ${fileName}` : '';
+        item.description = `${element.role}${fileDesc}`;
 
         // Use a full star for superhost/host, and a person icon for guests
         if (element.role === 'superhost' || element.role === 'host') {

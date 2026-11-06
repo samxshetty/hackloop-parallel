@@ -10,6 +10,17 @@ const {
   calculatePeakMinute,
 } = require('./wrapped/stats');
 const { sampleWrapped } = require('./wrapped/sample');
+const {
+  MAX_PATH_LENGTH,
+  MAX_PROJECT_FILES,
+  MAX_FILE_BYTES,
+  MAX_ACTIVE_FILE_BYTES,
+  MAX_TOTAL_BYTES,
+  sanitizeRelativePath,
+  isBinaryBuffer,
+  isSensitiveFile,
+  isExcludedPath,
+} = require('./project/paths');
 
 // ==========================================
 // 1. UNIT TESTS FOR SESSION WRAPPED STATS
@@ -322,8 +333,161 @@ async function runSocketTestsIfAvailable() {
   console.log('✔ Server Socket Integration Test Passed!\n');
 }
 
+// ==========================================
+// 1B. UNIT TESTS FOR PROJECT PATH SANITIZER & EXCLUSIONS
+// ==========================================
+
+function runProjectPathsUnitTests() {
+  console.log('Running Project Paths & Exclusions Unit Tests...');
+
+  // 1. Path sanitizer tests
+  // Traversal rejection
+  assert.strictEqual(sanitizeRelativePath('../foo.js'), null, 'Reject leading ..');
+  assert.strictEqual(sanitizeRelativePath('src/../../foo.js'), null, 'Reject middle ..');
+  assert.strictEqual(sanitizeRelativePath('src/..'), null, 'Reject trailing ..');
+  assert.strictEqual(sanitizeRelativePath('..'), null, 'Reject lone ..');
+
+  // Absolute path rejection
+  assert.strictEqual(sanitizeRelativePath('/etc/passwd'), null, 'Reject leading /');
+  assert.strictEqual(sanitizeRelativePath('\\Windows\\System32'), null, 'Reject leading \\');
+
+  // Drive letter rejection
+  assert.strictEqual(sanitizeRelativePath('C:\\project\\app.js'), null, 'Reject Windows drive C:');
+  assert.strictEqual(sanitizeRelativePath('d:/project/app.js'), null, 'Reject Windows drive d:');
+
+  // Empty segments & consecutive slashes
+  assert.strictEqual(sanitizeRelativePath(''), null, 'Reject empty path');
+  assert.strictEqual(sanitizeRelativePath('src//app.js'), null, 'Reject consecutive slashes');
+  assert.strictEqual(sanitizeRelativePath('src/'), null, 'Reject trailing slash');
+  assert.strictEqual(sanitizeRelativePath('.'), null, 'Reject lone .');
+
+  // Null bytes
+  assert.strictEqual(sanitizeRelativePath('src/app\0.js'), null, 'Reject null bytes');
+
+  // Over-long paths (> 260 chars)
+  const longPath = 'a/'.repeat(130) + 'file.js';
+  assert(longPath.length > 260);
+  assert.strictEqual(sanitizeRelativePath(longPath), null, 'Reject path > 260 chars');
+
+  // Non-string inputs
+  assert.strictEqual(sanitizeRelativePath(null), null);
+  assert.strictEqual(sanitizeRelativePath(undefined), null);
+  assert.strictEqual(sanitizeRelativePath(123), null);
+
+  // Normalization of backslashes and relative paths
+  assert.strictEqual(sanitizeRelativePath('src\\components\\App.tsx'), 'src/components/App.tsx');
+  assert.strictEqual(sanitizeRelativePath('./src/index.js'), 'src/index.js');
+  assert.strictEqual(sanitizeRelativePath('a/./b/./c.js'), 'a/b/c.js');
+
+  // Unicode support
+  assert.strictEqual(sanitizeRelativePath('src/föö/bär.ts'), 'src/föö/bär.ts');
+  assert.strictEqual(sanitizeRelativePath('src/🚀/main.js'), 'src/🚀/main.js');
+
+  // 2. Binary buffer detection
+  const textBuf = Buffer.from('console.log("hello world");\n', 'utf8');
+  assert.strictEqual(isBinaryBuffer(textBuf), false, 'Text buffer should not be binary');
+
+  const binaryBuf = Buffer.from([0x68, 0x65, 0x6c, 0x00, 0x6f]);
+  assert.strictEqual(isBinaryBuffer(binaryBuf), true, 'Buffer with NUL byte should be detected as binary');
+
+  const emptyBuf = Buffer.alloc(0);
+  assert.strictEqual(isBinaryBuffer(emptyBuf), false);
+  assert.strictEqual(isBinaryBuffer(null), false);
+
+  // 3. Exclusions: Default directories
+  assert.strictEqual(isExcludedPath('.git/config'), true);
+  assert.strictEqual(isExcludedPath('node_modules/ws/index.js'), true);
+  assert.strictEqual(isExcludedPath('dist/bundle.js'), true);
+  assert.strictEqual(isExcludedPath('out/extension.js'), true);
+  assert.strictEqual(isExcludedPath('build/App.js'), true);
+  assert.strictEqual(isExcludedPath('.vscode/settings.json'), true);
+  assert.strictEqual(isExcludedPath('.idea/workspace.xml'), true);
+  assert.strictEqual(isExcludedPath('.aws/credentials'), true);
+  assert.strictEqual(isExcludedPath('.ssh/id_rsa'), true);
+
+  // Exclusions: VSIX & Lockfiles
+  assert.strictEqual(isExcludedPath('extension.vsix'), true);
+  assert.strictEqual(isExcludedPath('package-lock.json'), true);
+  assert.strictEqual(isExcludedPath('yarn.lock'), true);
+  assert.strictEqual(isExcludedPath('pnpm-lock.yaml'), true);
+
+  // Exclusions: Media & Binary extensions
+  assert.strictEqual(isExcludedPath('assets/logo.png'), true);
+  assert.strictEqual(isExcludedPath('assets/icon.svg'), true);
+  assert.strictEqual(isExcludedPath('assets/favicon.ico'), true);
+  assert.strictEqual(isExcludedPath('docs/manual.pdf'), true);
+  assert.strictEqual(isExcludedPath('archive.zip'), true);
+
+  // Exclusions: Sensitive files
+  assert.strictEqual(isExcludedPath('.env'), true);
+  assert.strictEqual(isExcludedPath('.env.local'), true);
+  assert.strictEqual(isExcludedPath('.env.production'), true);
+  assert.strictEqual(isExcludedPath('.env.example'), false, '.env.example is explicitly allowed');
+  assert.strictEqual(isExcludedPath('server.key'), true);
+  assert.strictEqual(isExcludedPath('cert.pem'), true);
+  assert.strictEqual(isExcludedPath('cert.p12'), true);
+  assert.strictEqual(isExcludedPath('cert.pfx'), true);
+  assert.strictEqual(isExcludedPath('id_rsa'), true);
+  assert.strictEqual(isExcludedPath('id_rsa.pub'), true);
+  assert.strictEqual(isExcludedPath('.npmrc'), true);
+  assert.strictEqual(isExcludedPath('.netrc'), true);
+  assert.strictEqual(isExcludedPath('credentials.json'), true);
+  assert.strictEqual(isExcludedPath('credentials-dev.json'), true);
+  assert.strictEqual(isExcludedPath('my_secrets.txt'), true);
+  assert.strictEqual(isExcludedPath('config/secret_token.js'), true);
+
+  // Normal safe files
+  assert.strictEqual(isExcludedPath('src/app.js'), false);
+  assert.strictEqual(isExcludedPath('src/components/Header.tsx'), false);
+  assert.strictEqual(isExcludedPath('README.md'), false);
+  assert.strictEqual(isExcludedPath('package.json'), false);
+
+  // Custom exclude patterns
+  const customOpts = { exclude: ['temp/**', '*.log', 'test_fixtures/dummy.txt'] };
+  assert.strictEqual(isExcludedPath('temp/cache.json', customOpts), true);
+  assert.strictEqual(isExcludedPath('debug.log', customOpts), true);
+  assert.strictEqual(isExcludedPath('test_fixtures/dummy.txt', customOpts), true);
+  assert.strictEqual(isExcludedPath('src/main.ts', customOpts), false);
+
+  // includeSensitiveFiles setting
+  assert.strictEqual(isExcludedPath('.env', { includeSensitiveFiles: true }), false);
+  assert.strictEqual(isExcludedPath('credentials.json', { includeSensitiveFiles: true }), false);
+  // Still excludes non-sensitive defaults like .git even with includeSensitiveFiles: true
+  assert.strictEqual(isExcludedPath('.git/config', { includeSensitiveFiles: true }), true);
+
+  // Active file exception: Active file is NEVER excluded!
+  assert.strictEqual(
+    isExcludedPath('.env', { activeFile: '.env' }),
+    false,
+    'Active .env file must be shared'
+  );
+  assert.strictEqual(
+    isExcludedPath('package-lock.json', { activeFile: 'package-lock.json' }),
+    false,
+    'Active lockfile must be shared'
+  );
+  assert.strictEqual(
+    isExcludedPath('secret_config.json', { activeFile: 'secret_config.json' }),
+    false,
+    'Active secret file must be shared'
+  );
+  assert.strictEqual(
+    isExcludedPath('src/App.tsx', { activeFile: 'src/App.tsx' }),
+    false
+  );
+
+  // 4. Manifest limit constants
+  assert.strictEqual(MAX_PROJECT_FILES, 500);
+  assert.strictEqual(MAX_FILE_BYTES, 1024 * 1024);
+  assert.strictEqual(MAX_ACTIVE_FILE_BYTES, 4 * 1024 * 1024);
+  assert.strictEqual(MAX_TOTAL_BYTES, 25 * 1024 * 1024);
+
+  console.log('✔ All Project Paths & Exclusions Unit Tests Passed!\n');
+}
+
 async function main() {
   runWrappedUnitTests();
+  runProjectPathsUnitTests();
   await runSocketTestsIfAvailable();
   console.log('PASS');
   process.exit(0);

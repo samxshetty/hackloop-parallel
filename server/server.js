@@ -31,6 +31,13 @@ const {
   getNextBestActions,
 } = require('./hackathon');
 const { computeWrapped } = require('./wrapped/stats');
+const {
+  sanitizeRelativePath,
+  MAX_PROJECT_FILES,
+  MAX_FILE_BYTES,
+  MAX_ACTIVE_FILE_BYTES,
+  MAX_TOTAL_BYTES,
+} = require('./project/paths');
 
 const PORT = process.env.PORT || 8080;
 const CODE_TTL_MS = 10 * 60 * 1000;   // a code accepts new joins for 10 minutes
@@ -221,6 +228,9 @@ function handle(ws, data) {
         participantStats: new Map(),
         recorder,
         term: null,
+        files: new Map(),
+        manifest: [],
+        activeFile: null,
       };
       sessions.set(code, session);
       ws.role = 'superhost';
@@ -280,6 +290,9 @@ function handle(ws, data) {
         if (session.lastDoc) {
           send(guest.ws, { ...session.lastDoc, text: maskSecrets(session.lastDoc.text).text });
         }
+        if (session.manifest && session.manifest.length > 0) {
+          send(guest.ws, { t: 'project_update', manifest: session.manifest });
+        }
         const hState = getHackathonState(session.code, session.host.name);
         send(guest.ws, { t: 'hackathon_sync', state: hState, recommendations: getNextBestActions(hState) });
       } else {
@@ -295,21 +308,29 @@ function handle(ws, data) {
       const session = sessions.get(ws.code);
       if (!session) break;
 
+      const filePath = sanitizeRelativePath(msg.path || msg.file) || session.activeFile || 'shared.txt';
+      session.activeFile = filePath;
+
       const isHostSender = ws.role === 'superhost' || ws.role === 'host';
       let rawText = msg.text;
       let editChange = null;
 
+      let fileRecord = session.files.get(filePath);
+      const prevRaw = fileRecord?.raw ?? (session.lastRaw ?? session.lastDoc?.text ?? '');
+      const prevMasked = fileRecord?.masked ?? (session.lastMasked ?? '');
+      const prevSpans = fileRecord?.spans ?? (session.lastSpans ?? []);
+
       if (!isHostSender) {
         const res = reconcileGuestEdit(
-          session.lastRaw ?? session.lastDoc?.text ?? '',
-          session.lastMasked ?? '',
-          session.lastSpans ?? [],
+          prevRaw,
+          prevMasked,
+          prevSpans,
           msg.text
         );
         if (!res.ok) {
           fail(ws, res.error);
-          if (session.lastMasked !== undefined) {
-            send(ws, { t: 'doc', text: session.lastMasked, file: msg.file || session.lastDoc?.file });
+          if (prevMasked !== undefined) {
+            send(ws, { t: 'doc', text: prevMasked, file: filePath, path: filePath });
           }
           break;
         }
@@ -317,13 +338,22 @@ function handle(ws, data) {
         editChange = res.change;
       }
 
-      const prevRaw = session.lastRaw ?? session.lastDoc?.text ?? '';
-      session.lastRaw = rawText;
       const { text: maskedText, count, kinds, spans } = maskSecrets(rawText);
+      const byteLen = Buffer.byteLength(rawText, 'utf8');
+      session.files.set(filePath, {
+        raw: rawText,
+        masked: maskedText,
+        spans,
+        count,
+        kinds,
+        size: byteLen,
+      });
+
+      session.lastRaw = rawText;
       session.lastMasked = maskedText;
       session.lastSpans = spans;
-      session.lastDoc = { t: 'doc', text: rawText, file: msg.file };
-      session.recorder?.addSnapshot(msg.file || 'shared.txt', maskedText);
+      session.lastDoc = { t: 'doc', text: rawText, file: filePath, path: filePath };
+      session.recorder?.addSnapshot(filePath, maskedText);
 
       // Track wrapped edit stats & timestamps
       const now = Date.now();
@@ -377,8 +407,8 @@ function handle(ws, data) {
         send(session.host, { t: 'masked', count, kinds });
       }
 
-      const rawDoc = { ...msg, text: rawText };
-      const maskedDoc = { ...msg, text: maskedText };
+      const rawDoc = { ...msg, path: filePath, file: filePath, text: rawText };
+      const maskedDoc = { ...msg, path: filePath, file: filePath, text: maskedText };
       for (const w of everyone(session)) {
         if (w !== ws) {
           send(w, (w.role === 'superhost' || w.role === 'host') ? rawDoc : maskedDoc);
@@ -387,13 +417,146 @@ function handle(ws, data) {
       break;
     }
 
+
+    case 'project_manifest': {
+      if (ws.role !== 'superhost' && ws.role !== 'host') {
+        fail(ws, 'only hosts can upload project manifest');
+        break;
+      }
+      const session = sessions.get(ws.code);
+      if (!session) break;
+      if (!Array.isArray(msg.manifest)) {
+        fail(ws, 'invalid manifest');
+        break;
+      }
+
+      const validEntries = [];
+      let totalBytes = 0;
+      for (const item of msg.manifest) {
+        if (!item || typeof item !== 'object') continue;
+        const sanitized = sanitizeRelativePath(item.path);
+        if (!sanitized) continue;
+        const size = Number.isInteger(item.size) && item.size >= 0 ? item.size : 0;
+        const isAct = session.activeFile && session.activeFile.toLowerCase() === sanitized.toLowerCase();
+        const limit = isAct ? MAX_ACTIVE_FILE_BYTES : MAX_FILE_BYTES;
+        if (size > limit) continue;
+        if (validEntries.length >= MAX_PROJECT_FILES) break;
+        if (totalBytes + size > MAX_TOTAL_BYTES) break;
+        totalBytes += size;
+        validEntries.push({ path: sanitized, size });
+      }
+
+      session.manifest = validEntries;
+      sendToAll(session, { t: 'project_update', manifest: session.manifest });
+      break;
+    }
+
+    case 'file_content': {
+      if (ws.role !== 'superhost' && ws.role !== 'host') {
+        fail(ws, 'only hosts can upload file content');
+        break;
+      }
+      const session = sessions.get(ws.code);
+      if (!session) break;
+
+      const items = Array.isArray(msg.files) ? msg.files : (msg.path && typeof msg.text === 'string' ? [{ path: msg.path, text: msg.text }] : []);
+      if (items.length === 0) break;
+
+      for (const item of items) {
+        if (!item || typeof item.path !== 'string' || typeof item.text !== 'string') continue;
+        const sanitized = sanitizeRelativePath(item.path);
+        if (!sanitized) continue;
+
+        const rawText = item.text;
+        const byteLen = Buffer.byteLength(rawText, 'utf8');
+        const isAct = session.activeFile && session.activeFile.toLowerCase() === sanitized.toLowerCase();
+        const limit = isAct ? MAX_ACTIVE_FILE_BYTES : MAX_FILE_BYTES;
+        if (byteLen > limit) continue;
+
+        const { text: maskedText, count, kinds, spans } = maskSecrets(rawText);
+        session.files.set(sanitized, {
+          raw: rawText,
+          masked: maskedText,
+          spans,
+          count,
+          kinds,
+          size: byteLen,
+        });
+
+        session.recorder?.addSnapshot(sanitized, maskedText);
+        if (count > (session.secretsMaskedCount || 0)) {
+          session.secretsMaskedCount = count;
+        }
+
+        if (session.activeFile && session.activeFile.toLowerCase() === sanitized.toLowerCase()) {
+          session.lastRaw = rawText;
+          session.lastMasked = maskedText;
+          session.lastSpans = spans;
+          session.lastDoc = { t: 'doc', text: rawText, file: sanitized, path: sanitized };
+        }
+      }
+      break;
+    }
+
+    case 'file_request': {
+      const session = sessions.get(ws.code);
+      if (!session || !isMember(ws, session)) break;
+
+      const nowReq = Date.now();
+      if (!ws.fileReqWindowStart || nowReq - ws.fileReqWindowStart > 1000) {
+        ws.fileReqWindowStart = nowReq;
+        ws.fileReqCount = 0;
+      }
+      if (++ws.fileReqCount > 50) {
+        fail(ws, 'too many file requests');
+        break;
+      }
+
+      if (typeof msg.path !== 'string') {
+        fail(ws, 'path required');
+        break;
+      }
+      const sanitized = sanitizeRelativePath(msg.path);
+      if (!sanitized) {
+        fail(ws, 'invalid path');
+        break;
+      }
+
+      const inManifest = Array.isArray(session.manifest) && session.manifest.some((m) => m.path === sanitized);
+      const fileRecord = session.files.get(sanitized);
+
+      if (!inManifest && !fileRecord) {
+        fail(ws, 'file not in manifest');
+        break;
+      }
+
+      if (fileRecord) {
+        const textToSend = (ws.role === 'superhost' || ws.role === 'host') ? fileRecord.raw : fileRecord.masked;
+        send(ws, {
+          t: 'file_response',
+          path: sanitized,
+          text: textToSend,
+          count: fileRecord.count || 0,
+        });
+      } else {
+        send(ws, {
+          t: 'file_response',
+          path: sanitized,
+          text: '',
+          count: 0,
+        });
+      }
+      break;
+    }
     case 'cursor': {
       const session = sessions.get(ws.code);
       if (!session || !isMember(ws, session)) break;
       if (!Number.isInteger(msg.line) || !Number.isInteger(msg.character)) break;
+      const cursorPath = sanitizeRelativePath(msg.path) || session.activeFile || undefined;
       sendToAll(session, {
         t: 'cursor',
         name: ws.name,
+        path: cursorPath,
         line: msg.line,
         character: msg.character,
       }, ws);

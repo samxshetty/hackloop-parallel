@@ -8,6 +8,10 @@ import { AdminDashboardManager } from './dashboard/panel';
 import { HackathonManager } from './hackathon/panel';
 import { ParticipantsProvider } from './sidebar';
 import { registerTerminal, closeTerminals } from './terminal';
+import { WrappedData } from './wrapped/types';
+import { countSessionCommits } from './wrapped/gitStats';
+import { getSilentGithubLogin } from './wrapped/avatar';
+import { showWrappedPanel, getLastActiveWrapped } from './wrapped/index';
 
 const SCHEME = 'parallel';
 const MAX_SHARE_BYTES = 4 * 1024 * 1024;
@@ -388,13 +392,44 @@ export function activate(context: vscode.ExtensionContext) {
             await revokeLocalEditor();
         }
     });
+    let lastProcessedCommitsSessionCode: string | null = null;
+    let lastWrappedData: WrappedData | null = null;
+
+    onMessage('wrapped', async (msg) => {
+        if (!msg || !msg.data) return;
+        const data: WrappedData = msg.data;
+        lastWrappedData = data;
+        showWrappedPanel(context, data);
+
+        // If superhost, count Git commits during the session and inform the server
+        if (session.role === 'superhost' && lastProcessedCommitsSessionCode !== data.code) {
+            lastProcessedCommitsSessionCode = data.code;
+            try {
+                const gitStats = await countSessionCommits(data.startedAt, data.endedAt, data.participants);
+                send({
+                    t: 'wrapped_commits',
+                    commits: gitStats.totalCommits,
+                    participants: gitStats.participants,
+                });
+                data.totals.commits = gitStats.totalCommits;
+                for (const p of gitStats.participants) {
+                    const target = data.participants.find(tp => tp.id === p.id || tp.name === p.name);
+                    if (target) target.commits = p.commits;
+                }
+                showWrappedPanel(context, data);
+            } catch (err) {
+                console.error('Parallel: failed to count git commits', err);
+            }
+        }
+    });
+
     onMessage('ended', () => {
         const msgText = session.role === 'superhost' ? 'Session ended.' : 'The host ended the session.';
         vscode.window.showInformationMessage(msgText);
         session.role = undefined;
         updateStatus();
         resetShared();
-        disconnect();
+        setTimeout(disconnect, 4000);
     });
     onMessage('error', (msg) => {
         if (msg.msg === 'no replay') {
@@ -444,7 +479,8 @@ export function activate(context: vscode.ExtensionContext) {
         saveLastName(session.name);
         hostDoc = editor.document;
         hostFileName = baseName(editor.document.fileName);
-        send({ t: 'create', name: session.name });
+        const githubLogin = await getSilentGithubLogin();
+        send({ t: 'create', name: session.name, githubLogin });
     });
 
 
@@ -488,7 +524,8 @@ export function activate(context: vscode.ExtensionContext) {
         session.name = name.trim().slice(0, 30);
         saveLastName(session.name);
         saveLastSessionCode(code.trim().toUpperCase());
-        send({ t: 'join', code: code.trim().toUpperCase(), name: session.name });
+        const githubLogin = await getSilentGithubLogin();
+        send({ t: 'join', code: code.trim().toUpperCase(), name: session.name, githubLogin });
         vscode.window.showInformationMessage('Waiting for the host to approve you...');
     });
 
@@ -648,11 +685,20 @@ export function activate(context: vscode.ExtensionContext) {
         HackathonManager.getInstance().open(context);
     });
 
+    const openWrapped = vscode.commands.registerCommand('parallel.openWrapped', () => {
+        const data = lastWrappedData || getLastActiveWrapped();
+        if (data) {
+            showWrappedPanel(context, data);
+        } else {
+            vscode.window.showInformationMessage('No Session Wrapped recap available yet. Start and end a session to generate one.');
+        }
+    });
+
     const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
     const terminalDisposables = registerTerminal();
 
     context.subscriptions.push(
-        start, endSession, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, provider,
+        start, endSession, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, openWrapped, provider,
         watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 

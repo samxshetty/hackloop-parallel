@@ -141,6 +141,13 @@ Roles and permissions are authoritatively enforced by `server/server.js`:
 - **Admin Dashboard (`parallel.openAdminDashboard`):** Webview panel displaying live session counts, active participants, security redaction counts, latency, and server status.
 - **Collaborative Hackathon Mode (`parallel.openHackathonMode`):** Built-in sprint companion containing a live countdown timer, synchronized milestone checklist, deliverable tracker, team scratchpad, Next Best Actions recommender, and Git Guardian workspace inspector.
 
+### Session Wrapped (Animated Story & Recap)
+- **Authoritative Session Recap:** When a session ends, the server computes a pure, tamper-proof stats object containing session duration, active time, edits, lines modified, masked secrets, and Git commit attribution.
+- **Spotify-Wrapped-Style Animated Story:** A 7-slide interactive story webview scaled from a 720x1280 stage featuring Unbounded display typography, radiant neon glows, count-up metric tickers, fill animations, peak velocity sparklines, and auto-advancing slides (4.5s) with hold-to-pause, keyboard navigation, and `prefers-reduced-motion` compliance.
+- **Automated Awards & MVP:** Auto-assigns superlatives including *Session MVP*, *Night Owl*, *The Fixer*, *Silent Observer*, *Speed Typer*, and *Gatekeeper*.
+- **Privacy-Preserving Avatars:** GitHub avatars are read silently without prompting via `vscode.authentication.getSession('github', ['read:user'], { silent: true })`, configurable via the `parallel.wrapped.useGithubAvatar` privacy setting (default `true`; when disabled, renders initials circles styled with participant cursor colors).
+- **One-Click Export:** Standalone offline HTML export and high-fidelity PNG summary card rasterization via SVG `foreignObject` canvas rendering, complete with direct links to session replay (`parallel.openLastReplay`).
+
 ---
 
 ## 6. Architecture & How It Works Under the Hood
@@ -211,7 +218,7 @@ Roles and permissions are authoritatively enforced by `server/server.js`:
 
 ## 7. Commands Table
 
-All 17 commands registered in `extension/parallel/package.json`:
+All 18 commands registered in `extension/parallel/package.json`:
 
 | Command Identifier | Command Title | Description |
 | :--- | :--- | :--- |
@@ -232,6 +239,7 @@ All 17 commands registered in `extension/parallel/package.json`:
 | `parallel.shareTerminal` | Parallel: Share Terminal | (Superhost only) Streams active terminal output to promoted hosts (guests never receive terminal data). |
 | `parallel.stopSharingTerminal` | Parallel: Stop Sharing Terminal | (Superhost only) Stops the terminal broadcast and closes mirror terminal views. |
 | `parallel.toggleTerminalInput` | Parallel: Allow or Block Typing in Shared Terminal | (Superhost only) Toggles whether promoted hosts are permitted to type commands into the shared terminal. |
+| `parallel.openWrapped` | Parallel: Session Wrapped | Opens the Spotify-Wrapped-style animated story recap after a session ends (or anytime via command). |
 
 ---
 
@@ -361,6 +369,12 @@ hackloop-parallel/
 │       │   │   ├── ledger.ts
 │       │   │   ├── log.ts
 │       │   │   └── status.ts
+│       │   ├── wrapped/                  # Session Wrapped story recap, git stats & export
+│       │   │   ├── avatar.ts             # Silent GitHub avatar lookup & initials fallback
+│       │   │   ├── gitStats.ts           # Git log commit parser & Co-authored-by trailers
+│       │   │   ├── index.ts              # Webview panel manager & HTML/PNG exporters
+│       │   │   ├── types.ts              # Data contracts & interfaces
+│       │   │   └── wrappedHtml.ts        # 7-slide story DOM, CSS design system & animations
 │       │   ├── connection.ts             # WebSocket client & message dispatcher
 │       │   ├── extension.ts              # Extension activation & command registry
 │       │   ├── sidebar.ts                # Participants TreeDataProvider & click-to-jump
@@ -381,6 +395,9 @@ hackloop-parallel/
 │   │   ├── edit-guard.js                 # Reconciles edits to prevent secret overwriting
 │   │   ├── mask.js                       # Pattern masking with bullet replacement
 │   │   └── patterns.js                   # 10 built-in regex definitions for credentials
+│   ├── wrapped/                          # Pure authoritative stats calculation
+│   │   ├── sample.js                     # Dev-preview sample payload
+│   │   └── stats.js                      # computeWrapped(), streak & awards algorithms
 │   ├── package.json                      # Server package definition
 │   ├── server.js                         # Core WebSocket server implementation
 │   └── test.js                           # Integration and end-to-end test suites

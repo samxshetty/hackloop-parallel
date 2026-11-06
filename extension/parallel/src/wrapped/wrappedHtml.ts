@@ -51,10 +51,9 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
   const mvpParticipant = data.participants.find((p) => p.id === data.mvp?.participantId) || data.participants[0];
   const mvpName = mvpParticipant ? escapeHtml(mvpParticipant.name) : 'TEAM';
+  const mvpPct = mvpParticipant ? Math.min(100, Math.max(0, Number(mvpParticipant.contributionPct) || 0)) : 100;
 
-  const cspMeta = isStandalone
-    ? `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}' 'unsafe-inline';">`
-    : `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; style-src 'nonce-${nonce}' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}';">`;
+  const cspMeta = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: data: blob:; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com data:; script-src 'nonce-${nonce}';">`;
 
   // Render People rows
   const renderPeopleRows = (participants: WrappedParticipant[]) =>
@@ -127,7 +126,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Unbounded:wght@900&display=swap" rel="stylesheet">
-  <style nonce="${nonce}">
+  <style>
     :root {
       --ink: #0B0720;
       --magenta: #FF2E93;
@@ -1099,7 +1098,7 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
             <div class="mvp-meta">
               <div class="mvp-badge-title">★ SESSION MVP ★</div>
               <div class="mvp-name">${mvpName}</div>
-              <div class="mvp-detail">${mvpParticipant ? mvpParticipant.contributionPct : 100}% overall contribution</div>
+              <div class="mvp-detail">${mvpPct}% overall contribution</div>
             </div>
           </div>
 
@@ -1490,11 +1489,11 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
 
           const container = document.createElement('div');
           container.setAttribute('xmlns', 'http://www.w3.org/1999/xhtml');
-          container.style.cssText = 'width:720px;height:1280px;position:relative;background-color:#0B0720;overflow:hidden;box-sizing:border-box;color:#ffffff;font-family:\'Space Grotesk\', sans-serif;';
+          container.style.cssText = "width:720px;height:1280px;position:relative;background-color:#0B0720;overflow:hidden;box-sizing:border-box;color:#ffffff;font-family:'Space Grotesk', sans-serif;";
           if (bgClone) container.appendChild(bgClone);
 
           const innerWrap = document.createElement('div');
-          innerWrap.style.cssText = 'position:absolute;inset:0;padding:34px 36px 36px;display:flex;flex-direction:column;z-index:10;';
+          innerWrap.style.cssText = "position:absolute;inset:0;padding:34px 36px 36px;display:flex;flex-direction:column;z-index:10;";
           innerWrap.appendChild(cardClone);
           container.appendChild(innerWrap);
 
@@ -1562,6 +1561,26 @@ export function renderWrappedHtml(data: WrappedData, isStandalone = false): stri
         } else if (target.closest('#btn-export-png')) {
           e.preventDefault();
           exportToPng();
+        }
+      });
+
+      // Image error fallback for avatars (avoids inline onerror handler violating CSP)
+      function handleAvatarError(img) {
+        if (!img) return;
+        img.style.display = 'none';
+        if (img.nextElementSibling) {
+          img.nextElementSibling.style.display = 'flex';
+        }
+      }
+      window.addEventListener('error', (e) => {
+        const target = e.target;
+        if (target && target.tagName === 'IMG' && target.classList && target.classList.contains('avatar-img')) {
+          handleAvatarError(target);
+        }
+      }, true);
+      document.querySelectorAll('img.avatar-img').forEach(img => {
+        if (img.complete && img.naturalWidth === 0) {
+          handleAvatarError(img);
         }
       });
 

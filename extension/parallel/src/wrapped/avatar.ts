@@ -52,18 +52,29 @@ export function getInitials(name: string): string {
   return (parts[0][0] + parts[1][0]).toUpperCase();
 }
 
+function escapeHtml(str: any): string {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 /**
  * Renders avatar HTML with GitHub image and initials circle fallback.
  */
 export function renderAvatarHtml(p: WrappedParticipant): string {
   const avatarUrl = getAvatarUrl(p.githubLogin);
-  const initials = getInitials(p.name);
-  const color = p.color || '#C6FF3D';
+  const initials = escapeHtml(getInitials(p.name));
+  const color = escapeHtml(p.color || '#C6FF3D');
+  const name = escapeHtml(p.name);
 
   if (avatarUrl) {
     return `
       <div class="avatar-wrap" style="--ring-color: ${color};">
-        <img class="avatar-img" src="${avatarUrl}" alt="${p.name}" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';" />
+        <img class="avatar-img" src="${avatarUrl}" alt="${name}" />
         <div class="avatar-initials" style="display:none; background-color:${color};" aria-hidden="true">${initials}</div>
       </div>
     `.trim();

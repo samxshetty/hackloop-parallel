@@ -922,6 +922,22 @@ function terminateSession(session, endedByWs) {
   endedSessions.set(session.code, session);
   setTimeout(() => endedSessions.delete(session.code), 60000);
 
+  // Revoke all access: nobody keeps a role, edit rights or a session code.
+  // Only the superhost keeps its role briefly so wrapped_commits can still land.
+  for (const w of [...members, ...pending.map((p) => p.ws)]) {
+    w.canEdit = false;
+    if (w === session.host) continue;
+    w.role = undefined;
+    w.code = undefined;
+    setTimeout(() => { try { w.close(); } catch (_) { /* already closed */ } }, 5000);
+  }
+  setTimeout(() => {
+    if (session.host.code === session.code) {
+      session.host.role = undefined;
+      session.host.code = undefined;
+    }
+  }, 60000);
+
   clearSession(session.code);
   clearHackathonSession(session.code);
   sessions.delete(session.code);

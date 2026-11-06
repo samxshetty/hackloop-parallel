@@ -147,6 +147,16 @@ async function closeReadOnlyTabs() {
     }
 }
 
+// When a session ends, non-superhosts lose the shared file entirely:
+// the read-only tab and any editable copy are closed without a save prompt.
+async function removeSharedAccess(editableCopy?: vscode.TextDocument) {
+    await closeReadOnlyTabs();
+    if (editableCopy && !editableCopy.isClosed) {
+        await vscode.window.showTextDocument(editableCopy, { preview: false });
+        await vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor');
+    }
+}
+
 async function openEditableCopy() {
     console.log(`[Parallel:becomeEditor] Opening editable document. Role=${session.role} lines=${sharedText.split('\n').length}`);
     await closeReadOnlyTabs();
@@ -424,11 +434,16 @@ export function activate(context: vscode.ExtensionContext) {
     });
 
     onMessage('ended', () => {
-        const msgText = session.role === 'superhost' ? 'Session ended.' : 'The host ended the session.';
+        const wasSuperhost = session.role === 'superhost';
+        const editableCopy = wasSuperhost ? undefined : hostDoc;
+        const msgText = wasSuperhost ? 'Session ended.' : 'The host ended the session. Your access has been removed.';
         vscode.window.showInformationMessage(msgText);
         session.role = undefined;
         updateStatus();
         resetShared();
+        if (!wasSuperhost) {
+            void removeSharedAccess(editableCopy);
+        }
         setTimeout(disconnect, 4000);
     });
     onMessage('error', (msg) => {
@@ -445,12 +460,18 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
     onMessage('closed', () => {
-        if (session.role !== undefined) {
+        const wasSuperhost = session.role === 'superhost';
+        const editableCopy = wasSuperhost ? undefined : hostDoc;
+        const wasInSession = session.role !== undefined;
+        if (wasInSession) {
             vscode.window.showWarningMessage('Disconnected from the server.');
         }
         session.role = undefined;
         updateStatus();
         resetShared();
+        if (wasInSession && !wasSuperhost) {
+            void removeSharedAccess(editableCopy);
+        }
     });
 
     const start = vscode.commands.registerCommand('parallel.start', async () => {

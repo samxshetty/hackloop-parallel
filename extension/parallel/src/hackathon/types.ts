@@ -1,5 +1,6 @@
 export type TaskStatus = 'Backlog' | 'To Do' | 'In Progress' | 'Blocked' | 'Done';
 export type TaskPriority = 'Low' | 'Medium' | 'High' | 'Critical';
+export type TimerStatus = 'idle' | 'running' | 'paused' | 'completed';
 
 export interface Task {
   id: string;
@@ -31,6 +32,16 @@ export interface Deliverable {
   label: string;
   url: string;
   completed: boolean;
+}
+
+export interface CustomTimer {
+  durationMs: number;
+  remainingMs: number;
+  startedAt: number | null;
+  endsAt: number | null;
+  status: TimerStatus;
+  label: string;
+  updatedAt: number;
 }
 
 export interface PulseEvent {
@@ -94,6 +105,7 @@ export interface HackathonState {
   tasks: Task[];
   milestones: Milestone[];
   deliverables: Deliverable[];
+  timer: CustomTimer;
   pulse: PulseEvent[];
   notes: ProjectNotes;
 }

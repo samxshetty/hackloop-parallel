@@ -4,7 +4,6 @@
   "description": "Live shared coding sessions with permission-based live editing",
   "version": "0.0.1",
   "publisher": "team-parallel",
-  "icon": "media/icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/samxshetty/hackloop-parallel"
@@ -26,6 +25,10 @@
       {
         "command": "parallel.join",
         "title": "Parallel: Join Session"
+      },
+      {
+        "command": "parallel.endSession",
+        "title": "Parallel: End Session"
       },
       {
         "command": "parallel.changeRole",
@@ -86,6 +89,10 @@
       {
         "command": "parallel.toggleTerminalInput",
         "title": "Parallel: Allow or Block Typing in Shared Terminal"
+      },
+      {
+        "command": "parallel.openWrapped",
+        "title": "Parallel: Session Wrapped"
       }
     ],
     "viewsContainers": {
@@ -120,6 +127,11 @@
           "type": "string",
           "default": "",
           "description": "Shell to run in the shared terminal (empty: cmd.exe on Windows, $SHELL elsewhere)"
+        },
+        "parallel.wrapped.useGithubAvatar": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether to use GitHub profile avatars in Session Wrapped when signed into VS Code."
         }
       }
     }

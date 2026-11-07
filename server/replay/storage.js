@@ -6,13 +6,15 @@ const path = require('path');
 const RECORDINGS_DIR = path.join(__dirname, '..', 'recordings');
 const MAX_RECORDINGS = 20;
 
-function ensureDir() {
+function ensureDir(dir = RECORDINGS_DIR) {
   try {
-    if (!fs.existsSync(RECORDINGS_DIR)) {
-      fs.mkdirSync(RECORDINGS_DIR, { recursive: true });
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
+    return true;
   } catch (err) {
     console.error('Failed to create recordings dir:', err.message);
+    return false;
   }
 }
 
@@ -48,9 +50,7 @@ function saveRecording(recorder, dir = RECORDINGS_DIR) {
     const data = recorder.toJSON();
     if (!data || !data.id) return null;
 
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
+    ensureDir(dir);
 
     const filePath = path.join(dir, `${data.id}.json`);
     fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
@@ -67,6 +67,7 @@ function getRecording(id, dir = RECORDINGS_DIR) {
     if (typeof id !== 'string' || !/^[a-f0-9]{12}$/.test(id)) {
       return null;
     }
+    ensureDir(dir);
     const filePath = path.join(dir, `${id}.json`);
     if (!fs.existsSync(filePath)) {
       return null;
@@ -78,13 +79,15 @@ function getRecording(id, dir = RECORDINGS_DIR) {
       return data;
     }
     return null;
-  } catch {
+  } catch (err) {
+    console.error('Failed to read recording:', err.message);
     return null;
   }
 }
 
 function getLatestRecording(dir = RECORDINGS_DIR, filterFn = null) {
   try {
+    ensureDir(dir);
     if (!fs.existsSync(dir)) return null;
     const files = fs.readdirSync(dir)
       .filter((f) => f.endsWith('.json') && /^[a-f0-9]{12}\.json$/.test(f))
@@ -123,6 +126,7 @@ function getLatestRecording(dir = RECORDINGS_DIR, filterFn = null) {
 
 function listRecordings(dir = RECORDINGS_DIR, filterFn = null) {
   try {
+    ensureDir(dir);
     if (!fs.existsSync(dir)) return [];
     const files = fs.readdirSync(dir)
       .filter((f) => f.endsWith('.json') && /^[a-f0-9]{12}\.json$/.test(f))

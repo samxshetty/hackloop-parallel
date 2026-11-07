@@ -132,6 +132,90 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       border-color: rgba(210, 153, 34, 0.4);
       color: var(--warning);
     }
+
+    /* Custom Collaborative Timer Styles */
+    .timer-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 2px 8px;
+      border-radius: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .timer-badge.status-idle { background: rgba(110, 118, 129, 0.2); color: var(--text-muted); }
+    .timer-badge.status-running { background: rgba(46, 160, 67, 0.2); color: var(--success); border: 1px solid rgba(46, 160, 67, 0.4); }
+    .timer-badge.status-paused { background: rgba(210, 153, 34, 0.2); color: var(--warning); border: 1px solid rgba(210, 153, 34, 0.4); }
+    .timer-badge.status-completed { background: rgba(248, 81, 73, 0.2); color: var(--danger); border: 1px solid rgba(248, 81, 73, 0.4); }
+
+    .timer-display-box {
+      font-family: var(--font-mono);
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: 1px;
+      padding: 10px 18px;
+      border-radius: 8px;
+      background: rgba(0, 0, 0, 0.2);
+      border: 1px solid var(--border);
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 150px;
+      transition: all 0.2s ease;
+    }
+    .timer-display-box.idle { color: var(--text-muted); border-color: var(--border); }
+    .timer-display-box.running {
+      border-color: var(--success);
+      color: var(--success);
+      background: rgba(46, 160, 67, 0.1);
+    }
+    .timer-display-box.paused {
+      border-color: var(--warning);
+      color: var(--warning);
+      background: rgba(210, 153, 34, 0.1);
+    }
+    .timer-display-box.urgent {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(248, 81, 73, 0.2);
+      animation: pulseUrgent 1s infinite alternate;
+    }
+    @keyframes pulseUrgent {
+      from { opacity: 0.8; }
+      to { opacity: 1; transform: scale(1.02); }
+    }
+    .timer-display-box.completed {
+      border-color: var(--danger);
+      color: var(--danger);
+      background: rgba(248, 81, 73, 0.15);
+    }
+    .timer-alert {
+      margin-top: 8px;
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .timer-alert.warning {
+      background: rgba(210, 153, 34, 0.2);
+      border: 1px solid var(--warning);
+      color: var(--warning);
+    }
+    .timer-alert.completed {
+      background: rgba(46, 160, 67, 0.2);
+      border: 1px solid var(--success);
+      color: var(--success);
+    }
+
+
+    .countdown-widget.deadline-passed {
+      background: rgba(248, 81, 73, 0.25);
+      border-color: var(--danger);
+      color: var(--danger);
+      font-weight: 700;
+    }
     .countdown-time {
       font-family: var(--font-mono);
       font-size: 15px;
@@ -309,6 +393,24 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       padding: 6px 10px;
       font-size: 12px;
       font-family: inherit;
+    }
+        input[type="datetime-local"] {
+      color-scheme: dark;
+      cursor: pointer;
+      position: relative;
+    }
+    input[type="datetime-local"]::-webkit-calendar-picker-indicator {
+      cursor: pointer;
+      filter: invert(0.9) brightness(1.2);
+      opacity: 0.85;
+      padding: 3px;
+      border-radius: 4px;
+      transition: opacity 0.15s, background-color 0.15s;
+    }
+    input[type="datetime-local"]::-webkit-calendar-picker-indicator:hover {
+      opacity: 1;
+      background-color: rgba(255, 255, 255, 0.15);
+      filter: invert(1);
     }
     input:focus, select:focus, textarea:focus {
       outline: 1px solid var(--btn-bg);
@@ -606,6 +708,11 @@ export function renderHackathonHtml(initialState: WebviewState): string {
         <span>⏳ Deadline:</span>
         <span id="countdownDisplay" class="countdown-time">--:--:--</span>
       </div>
+      <button id="btnEditDeadline" class="secondary btn-edit-deadline" title="Edit Hackathon Deadline" style="display: none; padding: 4px 10px; font-size: 11px;">✏️ Edit Deadline</button>
+      <div id="customTimerHeaderWidget" class="countdown-widget" style="display: none;" title="Custom Collaborative Timer">
+        <span id="customTimerHeaderLabel">⏱️ Timer:</span>
+        <span id="customTimerHeaderDisplay" class="countdown-time">--:--:--</span>
+      </div>
       <button id="btnRefresh" class="secondary" title="Sync latest data">↻ Refresh</button>
     </div>
   </div>
@@ -628,6 +735,55 @@ export function renderHackathonHtml(initialState: WebviewState): string {
 
   <!-- TAB 1: Command Center Overview -->
   <div id="tab-overview" class="tab-content active">
+    <!-- Custom Collaborative Hackathon Timer -->
+    <div class="card" id="customTimerSection">
+      <div class="card-title" style="display: flex; justify-content: space-between; align-items: center;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span>⏱️ Custom Collaborative Timer</span>
+          <span id="timerLabelDisplay" style="font-size: 12px; font-weight: normal; opacity: 0.85;">(MVP Sprint)</span>
+        </div>
+        <span id="timerStatusBadge" class="timer-badge status-idle">Ready</span>
+      </div>
+
+      <div id="timerWarningBanner" class="timer-alert warning" style="display: none;"></div>
+
+      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 14px; margin-top: 10px;">
+        <div id="timerDisplayBox" class="timer-display-box idle">
+          <span id="timerCountdownDisplay">--:--:--</span>
+        </div>
+
+        <!-- Controls Section for Superhost -->
+        <div id="timerHostControls" style="display: flex; flex-direction: column; gap: 8px; flex: 1; min-width: 280px;">
+          <div id="timerConfigInputs" style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <label style="font-size: 10px; opacity: 0.7;">Hours</label>
+              <input type="number" id="timerInputHours" min="0" max="24" value="0" style="width: 55px; padding: 4px 6px;">
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px;">
+              <label style="font-size: 10px; opacity: 0.7;">Minutes</label>
+              <input type="number" id="timerInputMinutes" min="0" max="59" value="25" style="width: 55px; padding: 4px 6px;">
+            </div>
+            <div style="display: flex; flex-direction: column; gap: 2px; flex: 1;">
+              <label style="font-size: 10px; opacity: 0.7;">Timer Label (e.g. MVP Sprint, Pitch Prep)</label>
+              <input type="text" id="timerInputLabel" placeholder="e.g. MVP Sprint, Pitch Prep" value="MVP Sprint" style="padding: 4px 6px;">
+            </div>
+          </div>
+
+          <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+            <button id="btnTimerStart" style="background: var(--success); color: #fff;">▶ Start</button>
+            <button id="btnTimerPause" class="secondary" style="display: none;">⏸ Pause</button>
+            <button id="btnTimerResume" style="display: none; background: var(--success); color: #fff;">▶ Resume</button>
+            <button id="btnTimerReset" class="secondary">⏹ Reset</button>
+          </div>
+        </div>
+
+        <!-- Non-host notice -->
+        <div id="timerGuestNotice" style="display: none; font-size: 12px; opacity: 0.7; font-style: italic;">
+          🔒 Synchronized collaborative timer (controlled by host).
+        </div>
+      </div>
+    </div>
+
     <!-- Standout Recommendations -->
     <div class="card">
       <div class="card-title">
@@ -887,6 +1043,86 @@ export function renderHackathonHtml(initialState: WebviewState): string {
     </div>
   </div>
 
+
+  <!-- Deliverable URL Edit Modal -->
+  <div id="deliverableModalBackdrop" class="modal-backdrop">
+    <div class="modal" style="max-width: 480px;">
+      <div class="modal-header">
+        <span id="modalDeliverableTitleText">Edit Deliverable URL</span>
+        <button id="btnDeliverableModalClose" class="secondary" style="padding: 2px 6px;">✕</button>
+      </div>
+      <div class="modal-body">
+        <input type="hidden" id="modalDeliverableId">
+        <div class="form-group">
+          <label id="modalDeliverableLabel">Deliverable URL</label>
+          <input type="text" id="modalDeliverableUrl" placeholder="https://..." style="width: 100%;">
+          <div id="modalDeliverableError" style="color: var(--danger); font-size: 11px; margin-top: 4px; display: none;"></div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnDeliverableModalClear" class="secondary" style="margin-right: auto;">Clear URL</button>
+        <button id="btnDeliverableModalCancel" class="secondary">Cancel</button>
+        <button id="btnDeliverableModalSave">Save</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- Deadline Modal (Edit Deadline & Start Time) -->
+  <div id="deadlineModalBackdrop" class="modal-backdrop">
+    <div class="modal" style="max-width: 520px;">
+      <div class="modal-header">
+        <span id="modalDeadlineTitleText">Edit Hackathon Deadline</span>
+        <button id="btnDeadlineModalClose" class="secondary" style="padding: 2px 6px;">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label for="modalDeadlineHackathonName">Hackathon Name</label>
+          <input type="text" id="modalDeadlineHackathonName" placeholder="Hackathon Name" style="width: 100%;">
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+          <div class="form-group">
+            <label for="modalDeadlineStartTime" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;">
+              <span>Start Date & Time</span>
+              <span style="font-size: 10px; opacity: 0.7; font-weight: normal; text-transform: none;">📅 Pick</span>
+            </label>
+            <input type="datetime-local" id="modalDeadlineStartTime" step="60" style="width: 100%;">
+          </div>
+          <div class="form-group">
+            <label for="modalDeadlineEndTime" style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;">
+              <span>Deadline Date & Time</span>
+              <span style="font-size: 10px; opacity: 0.7; font-weight: normal; text-transform: none;">📅 Pick</span>
+            </label>
+            <input type="datetime-local" id="modalDeadlineEndTime" step="60" style="width: 100%;">
+          </div>
+        </div>
+
+        <!-- Live Countdown Preview -->
+        <div class="form-group" style="margin-top: 8px;">
+          <label style="font-size: 11px; opacity: 0.8;">Live Countdown Preview:</label>
+          <div id="modalDeadlinePreviewBox" class="countdown-widget" style="justify-content: center; font-size: 14px; margin-top: 4px;">
+            <span>⏱️ Preview:</span>
+            <span id="modalDeadlinePreviewDisplay" class="countdown-time">--:--:--</span>
+          </div>
+        </div>
+
+        <!-- Validation Error Message -->
+        <div id="modalDeadlineError" style="color: var(--danger); font-size: 12px; margin-top: 6px; display: none;"></div>
+
+        <!-- Confirmation Prompt -->
+        <div id="modalDeadlineConfirmBox" style="display: none; margin-top: 10px; padding: 10px; background: rgba(210, 153, 34, 0.15); border: 1px solid var(--warning); border-radius: 4px; font-size: 12px;">
+          <div style="font-weight: 600; color: var(--warning); margin-bottom: 4px;">⚠️ Confirm Deadline Change</div>
+          <div id="modalDeadlineConfirmText">Are you sure you want to change the deadline? This will update the countdown for all participants.</div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnDeadlineModalCancel" class="secondary">Cancel</button>
+        <button id="btnDeadlineModalSave" style="background: var(--btn-bg); color: var(--btn-fg);">Save Changes</button>
+        <button id="btnDeadlineModalConfirm" style="display: none; background: var(--success); color: #fff;">Yes, Update Deadline</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Task Modal (Create / Edit) -->
   <div id="taskModalBackdrop" class="modal-backdrop">
     <div class="modal">
@@ -974,6 +1210,23 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       const badgeCode = document.getElementById('badgeCode');
       const countdownWidget = document.getElementById('countdownWidget');
       const countdownDisplay = document.getElementById('countdownDisplay');
+
+      // Edit Deadline Modal Elements
+      const btnEditDeadline = document.getElementById('btnEditDeadline');
+      const deadlineModalBackdrop = document.getElementById('deadlineModalBackdrop');
+      const modalDeadlineHackathonName = document.getElementById('modalDeadlineHackathonName');
+      const modalDeadlineStartTime = document.getElementById('modalDeadlineStartTime');
+      const modalDeadlineEndTime = document.getElementById('modalDeadlineEndTime');
+      const modalDeadlinePreviewBox = document.getElementById('modalDeadlinePreviewBox');
+      const modalDeadlinePreviewDisplay = document.getElementById('modalDeadlinePreviewDisplay');
+      const modalDeadlineError = document.getElementById('modalDeadlineError');
+      const modalDeadlineConfirmBox = document.getElementById('modalDeadlineConfirmBox');
+      const modalDeadlineConfirmText = document.getElementById('modalDeadlineConfirmText');
+      const btnDeadlineModalClose = document.getElementById('btnDeadlineModalClose');
+      const btnDeadlineModalCancel = document.getElementById('btnDeadlineModalCancel');
+      const btnDeadlineModalSave = document.getElementById('btnDeadlineModalSave');
+      const btnDeadlineModalConfirm = document.getElementById('btnDeadlineModalConfirm');
+
       const readOnlyBanner = document.getElementById('readOnlyBanner');
       const btnRequestEdit = document.getElementById('btnRequestEdit');
       const btnRefresh = document.getElementById('btnRefresh');
@@ -1016,6 +1269,39 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       const modalTaskBlockedReason = document.getElementById('modalTaskBlockedReason');
       const modalTaskFiles = document.getElementById('modalTaskFiles');
 
+
+      // Deliverable Modal Elements
+      const deliverableModalBackdrop = document.getElementById('deliverableModalBackdrop');
+      const modalDeliverableTitleText = document.getElementById('modalDeliverableTitleText');
+      const modalDeliverableId = document.getElementById('modalDeliverableId');
+      const modalDeliverableUrl = document.getElementById('modalDeliverableUrl');
+      const modalDeliverableError = document.getElementById('modalDeliverableError');
+      const btnDeliverableModalClose = document.getElementById('btnDeliverableModalClose');
+      const btnDeliverableModalCancel = document.getElementById('btnDeliverableModalCancel');
+      const btnDeliverableModalClear = document.getElementById('btnDeliverableModalClear');
+      const btnDeliverableModalSave = document.getElementById('btnDeliverableModalSave');
+
+      // Custom Timer Elements
+      const customTimerHeaderWidget = document.getElementById('customTimerHeaderWidget');
+      const customTimerHeaderLabel = document.getElementById('customTimerHeaderLabel');
+      const customTimerHeaderDisplay = document.getElementById('customTimerHeaderDisplay');
+      const customTimerSection = document.getElementById('customTimerSection');
+      const timerLabelDisplay = document.getElementById('timerLabelDisplay');
+      const timerStatusBadge = document.getElementById('timerStatusBadge');
+      const timerWarningBanner = document.getElementById('timerWarningBanner');
+      const timerDisplayBox = document.getElementById('timerDisplayBox');
+      const timerCountdownDisplay = document.getElementById('timerCountdownDisplay');
+      const timerHostControls = document.getElementById('timerHostControls');
+      const timerConfigInputs = document.getElementById('timerConfigInputs');
+      const timerInputHours = document.getElementById('timerInputHours');
+      const timerInputMinutes = document.getElementById('timerInputMinutes');
+      const timerInputLabel = document.getElementById('timerInputLabel');
+      const btnTimerStart = document.getElementById('btnTimerStart');
+      const btnTimerPause = document.getElementById('btnTimerPause');
+      const btnTimerResume = document.getElementById('btnTimerResume');
+      const btnTimerReset = document.getElementById('btnTimerReset');
+      const timerGuestNotice = document.getElementById('timerGuestNotice');
+
       // Milestones & Deliverables
       const milestonesList = document.getElementById('milestonesList');
       const deliverablesList = document.getElementById('deliverablesList');
@@ -1051,6 +1337,23 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       const setupTeamMembers = document.getElementById('setupTeamMembers');
       const setupGoals = document.getElementById('setupGoals');
       const btnSaveSetup = document.getElementById('btnSaveSetup');
+
+
+      function toLocalDatetimeInput(val) {
+        if (!val) return '';
+        if (typeof val === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(val)) {
+          return val;
+        }
+        const d = new Date(val);
+        if (isNaN(d.getTime())) return '';
+        const pad = (n) => (n < 10 ? '0' : '') + n;
+        const year = d.getFullYear();
+        const month = pad(d.getMonth() + 1);
+        const day = pad(d.getDate());
+        const hours = pad(d.getHours());
+        const minutes = pad(d.getMinutes());
+        return year + '-' + month + '-' + day + 'T' + hours + ':' + minutes;
+      }
 
       function escapeHtml(str) {
         if (!str) return '';
@@ -1092,12 +1395,13 @@ export function renderHackathonHtml(initialState: WebviewState): string {
         const deadline = new Date(deadlineStr).getTime();
         if (isNaN(deadline)) {
           countdownDisplay.textContent = 'Invalid date';
+          countdownWidget.className = 'countdown-widget';
           return;
         }
         const diff = deadline - Date.now();
         if (diff <= 0) {
-          countdownDisplay.textContent = 'DEADLINE REACHED';
-          countdownWidget.className = 'countdown-widget urgent';
+          countdownDisplay.textContent = 'DEADLINE PASSED';
+          countdownWidget.className = 'countdown-widget urgent deadline-passed';
           return;
         }
         const hours = Math.floor(diff / (1000 * 60 * 60));
@@ -1108,7 +1412,7 @@ export function renderHackathonHtml(initialState: WebviewState): string {
                                       (mins < 10 ? '0' : '') + mins + ':' +
                                       (secs < 10 ? '0' : '') + secs;
 
-        if (hours < 2) {
+        if (hours < 1) {
           countdownWidget.className = 'countdown-widget urgent';
         } else if (hours < 6) {
           countdownWidget.className = 'countdown-widget warning';
@@ -1116,11 +1420,155 @@ export function renderHackathonHtml(initialState: WebviewState): string {
           countdownWidget.className = 'countdown-widget';
         }
       }
-      setInterval(updateCountdown, 1000);
+      setInterval(() => {
+        updateCountdown();
+        if (deadlineModalBackdrop && deadlineModalBackdrop.classList.contains('open')) {
+          updateDeadlineModalPreview();
+        }
+      }, 1000);
+
+      // Custom Collaborative Timer Logic
+      let timerCompletionNotified = false;
+
+      function updateCustomTimer() {
+        const timer = state.state?.timer;
+        if (!timer) {
+          if (customTimerSection) customTimerSection.style.display = 'none';
+          if (customTimerHeaderWidget) customTimerHeaderWidget.style.display = 'none';
+          return;
+        }
+
+        if (customTimerSection) customTimerSection.style.display = 'block';
+        if (customTimerHeaderWidget) customTimerHeaderWidget.style.display = 'flex';
+
+        const status = timer.status || 'idle';
+        const label = timer.label || 'Custom Timer';
+        if (timerLabelDisplay) timerLabelDisplay.textContent = '(' + label + ')';
+        if (customTimerHeaderLabel) customTimerHeaderLabel.textContent = '⏱️ ' + label + ':';
+
+        let remMs = 0;
+        const now = Date.now();
+
+        if (status === 'running') {
+          if (timer.endsAt) {
+            remMs = Math.max(0, timer.endsAt - now);
+          } else {
+            remMs = timer.remainingMs || 0;
+          }
+        } else if (status === 'paused') {
+          remMs = timer.remainingMs || 0;
+        } else if (status === 'completed') {
+          remMs = 0;
+        } else {
+          remMs = timer.remainingMs || timer.durationMs || 0;
+        }
+
+        const totalSecs = Math.ceil(remMs / 1000);
+        const hours = Math.floor(totalSecs / 3600);
+        const mins = Math.floor((totalSecs % 3600) / 60);
+        const secs = totalSecs % 60;
+        const timeStr = (hours < 10 ? '0' : '') + hours + ':' +
+                        (mins < 10 ? '0' : '') + mins + ':' +
+                        (secs < 10 ? '0' : '') + secs;
+
+        if (timerCountdownDisplay) timerCountdownDisplay.textContent = timeStr;
+        if (customTimerHeaderDisplay) customTimerHeaderDisplay.textContent = timeStr;
+
+        if (timerStatusBadge) {
+          timerStatusBadge.className = 'timer-badge status-' + status;
+          timerStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+        }
+
+        if (status === 'running') {
+          if (remMs <= 60000 && remMs > 0) {
+            if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box urgent';
+            if (timerWarningBanner) {
+              timerWarningBanner.className = 'timer-alert warning';
+              timerWarningBanner.style.display = 'flex';
+              timerWarningBanner.textContent = '⚠️ Less than 1 minute remaining!';
+            }
+            if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget urgent';
+          } else if (remMs === 0) {
+            if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box completed';
+            if (timerWarningBanner) {
+              timerWarningBanner.className = 'timer-alert completed';
+              timerWarningBanner.style.display = 'flex';
+              timerWarningBanner.textContent = '🎉 Time is up! Sprint "' + label + '" completed.';
+            }
+            if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget warning';
+            if (!timerCompletionNotified) {
+              timerCompletionNotified = true;
+              if (vscode) {
+                vscode.postMessage({ command: 'timer_completed', label: label });
+              }
+            }
+          } else {
+            if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box running';
+            if (timerWarningBanner) timerWarningBanner.style.display = 'none';
+            if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget';
+            timerCompletionNotified = false;
+          }
+        } else if (status === 'paused') {
+          if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box paused';
+          if (timerWarningBanner) timerWarningBanner.style.display = 'none';
+          if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget warning';
+        } else if (status === 'completed') {
+          if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box completed';
+          if (timerWarningBanner) {
+            timerWarningBanner.className = 'timer-alert completed';
+            timerWarningBanner.style.display = 'flex';
+            timerWarningBanner.textContent = '🎉 Sprint "' + label + '" completed.';
+          }
+          if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget warning';
+        } else {
+          // idle
+          if (timerDisplayBox) timerDisplayBox.className = 'timer-display-box idle';
+          if (timerWarningBanner) timerWarningBanner.style.display = 'none';
+          if (customTimerHeaderWidget) customTimerHeaderWidget.className = 'countdown-widget';
+          timerCompletionNotified = false;
+        }
+
+        const superhost = state.userRole === 'superhost';
+        if (superhost) {
+          if (timerHostControls) timerHostControls.style.display = 'flex';
+          if (timerGuestNotice) timerGuestNotice.style.display = 'none';
+
+          if (status === 'running') {
+            if (timerConfigInputs) timerConfigInputs.style.display = 'none';
+            if (btnTimerStart) btnTimerStart.style.display = 'none';
+            if (btnTimerPause) btnTimerPause.style.display = 'inline-flex';
+            if (btnTimerResume) btnTimerResume.style.display = 'none';
+            if (btnTimerReset) btnTimerReset.style.display = 'inline-flex';
+          } else if (status === 'paused') {
+            if (timerConfigInputs) timerConfigInputs.style.display = 'none';
+            if (btnTimerStart) btnTimerStart.style.display = 'none';
+            if (btnTimerPause) btnTimerPause.style.display = 'none';
+            if (btnTimerResume) btnTimerResume.style.display = 'inline-flex';
+            if (btnTimerReset) btnTimerReset.style.display = 'inline-flex';
+          } else {
+            // idle or completed
+            if (timerConfigInputs) timerConfigInputs.style.display = 'flex';
+            if (btnTimerStart) btnTimerStart.style.display = 'inline-flex';
+            if (btnTimerPause) btnTimerPause.style.display = 'none';
+            if (btnTimerResume) btnTimerResume.style.display = 'none';
+            if (btnTimerReset) btnTimerReset.style.display = 'inline-flex';
+          }
+        } else {
+          if (timerHostControls) timerHostControls.style.display = 'none';
+          if (timerGuestNotice) timerGuestNotice.style.display = 'block';
+        }
+      }
+
+      setInterval(updateCustomTimer, 1000);
+
 
       // Render Functions
       function renderHeader() {
         badgeRole.textContent = 'Role: ' + (state.userRole || 'guest') + (state.canEdit && state.userRole === 'guest' ? ' (editor)' : '');
+        const isSuperhost = state.userRole === 'superhost';
+        if (btnEditDeadline) {
+          btnEditDeadline.style.display = isSuperhost ? 'inline-flex' : 'none';
+        }
         badgeCode.textContent = 'Session: ' + (state.sessionCode || '-');
         if (!canMutate()) {
           readOnlyBanner.style.display = 'flex';
@@ -1134,6 +1582,7 @@ export function renderHackathonHtml(initialState: WebviewState): string {
           btnSaveSetup.disabled = !isHost();
         }
         updateCountdown();
+        updateCustomTimer();
       }
 
       function renderRecommendations() {
@@ -1313,7 +1762,9 @@ export function renderHackathonHtml(initialState: WebviewState): string {
               '<input type="checkbox" class="item-check" data-id="' + escapeHtml(d.id) + '" ' + (d.completed ? 'checked' : '') + ' ' + (!canMutate() ? 'disabled' : '') + '>' +
               '<div class="item-info">' +
                 '<span class="item-title ' + (d.completed ? 'completed' : '') + '">' + escapeHtml(d.label) + '</span>' +
-                (d.url ? '<a href="' + escapeHtml(d.url) + '" style="color:var(--info); font-size:11px;" target="_blank">' + escapeHtml(d.url) + '</a>' : '<span style="font-size:11px; opacity:0.6;">No URL configured</span>') +
+                (d.url
+                  ? '<a href="' + escapeHtml(d.url) + '" class="deliv-link" data-url="' + escapeHtml(d.url) + '" style="color:var(--info); font-size:11px; text-decoration:underline; cursor:pointer;" target="_blank">' + escapeHtml(d.url) + '</a>'
+                  : '<span style="font-size:11px; opacity:0.6;">No URL configured</span>') +
               '</div>' +
             '</div>' +
             (canMutate() ? '<button class="secondary btn-edit-deliv" data-id="' + escapeHtml(d.id) + '" style="font-size:11px; padding:3px 8px;">Edit URL</button>' : '') +
@@ -1334,18 +1785,28 @@ export function renderHackathonHtml(initialState: WebviewState): string {
           });
         });
 
+        deliverablesList.querySelectorAll('.deliv-link').forEach(link => {
+          link.addEventListener('click', (e) => {
+            e.preventDefault();
+            const url = e.currentTarget.dataset.url;
+            if (url && vscode) {
+              vscode.postMessage({ command: 'open_url', url: url });
+            }
+          });
+        });
+
         deliverablesList.querySelectorAll('.btn-edit-deliv').forEach(btn => {
           btn.addEventListener('click', (e) => {
             const dId = e.target.dataset.id;
             const item = deliverables.find(d => d.id === dId);
-            const newUrl = prompt('Enter URL for ' + (item?.label || 'deliverable') + ':', item?.url || '');
-            if (newUrl !== null && vscode) {
-              vscode.postMessage({
-                command: 'update_deliverable',
-                id: dId,
-                updates: { url: newUrl.trim() }
-              });
-            }
+            if (!item) return;
+
+            modalDeliverableId.value = dId;
+            modalDeliverableTitleText.textContent = 'Edit URL: ' + (item.label || 'Deliverable');
+            modalDeliverableUrl.value = item.url || '';
+            modalDeliverableError.style.display = 'none';
+            deliverableModalBackdrop.classList.add('open');
+            modalDeliverableUrl.focus();
           });
         });
       }
@@ -1427,8 +1888,8 @@ export function renderHackathonHtml(initialState: WebviewState): string {
         setupProjectName.value = s.projectName || '';
         setupDescription.value = s.description || '';
         setupRepoUrl.value = s.repositoryUrl || '';
-        setupStartTime.value = s.startTime ? s.startTime.slice(0, 16) : '';
-        setupDeadline.value = s.deadline ? s.deadline.slice(0, 16) : '';
+        setupStartTime.value = toLocalDatetimeInput(s.startTime);
+        setupDeadline.value = toLocalDatetimeInput(s.deadline);
         setupTeamMembers.value = (s.teamMembers || []).join(', ');
         setupGoals.value = (s.goals || []).join(', ');
 
@@ -1615,8 +2076,8 @@ export function renderHackathonHtml(initialState: WebviewState): string {
               projectName: setupProjectName.value.trim(),
               description: setupDescription.value.trim(),
               repositoryUrl: setupRepoUrl.value.trim(),
-              startTime: setupStartTime.value,
-              deadline: setupDeadline.value,
+              startTime: setupStartTime.value ? new Date(setupStartTime.value).toISOString() : '',
+              deadline: setupDeadline.value ? new Date(setupDeadline.value).toISOString() : '',
               teamMembers,
               goals
             }
@@ -1628,6 +2089,319 @@ export function renderHackathonHtml(initialState: WebviewState): string {
       btnRefresh.addEventListener('click', () => {
         if (vscode) vscode.postMessage({ command: 'refresh' });
       });
+
+
+
+      // Edit Deadline Modal Logic
+      function updateDeadlineModalPreview() {
+        if (!modalDeadlineEndTime || !modalDeadlineStartTime) return;
+        const startVal = modalDeadlineStartTime.value;
+        const endVal = modalDeadlineEndTime.value;
+
+        if (!endVal) {
+          modalDeadlinePreviewDisplay.textContent = 'No deadline chosen';
+          modalDeadlinePreviewBox.className = 'countdown-widget';
+          return;
+        }
+
+        const endTime = new Date(endVal).getTime();
+        const startTime = startVal ? new Date(startVal).getTime() : NaN;
+
+        if (isNaN(endTime)) {
+          modalDeadlinePreviewDisplay.textContent = 'Invalid date';
+          modalDeadlinePreviewBox.className = 'countdown-widget';
+          return;
+        }
+
+        if (!isNaN(startTime) && endTime <= startTime) {
+          modalDeadlinePreviewDisplay.textContent = 'Deadline <= Start Time';
+          modalDeadlinePreviewBox.className = 'countdown-widget urgent';
+          if (modalDeadlineError) {
+            modalDeadlineError.textContent = 'Deadline must be later than the start time.';
+            modalDeadlineError.style.display = 'block';
+          }
+          return;
+        }
+
+        if (modalDeadlineError) modalDeadlineError.style.display = 'none';
+
+        const diff = endTime - Date.now();
+        if (diff <= 0) {
+          modalDeadlinePreviewDisplay.textContent = 'DEADLINE PASSED';
+          modalDeadlinePreviewBox.className = 'countdown-widget urgent deadline-passed';
+          return;
+        }
+
+        const h = Math.floor(diff / 3600000);
+        const m = Math.floor((diff % 3600000) / 60000);
+        const s = Math.floor((diff % 60000) / 1000);
+        modalDeadlinePreviewDisplay.textContent = (h < 10 ? '0' : '') + h + ':' +
+                                                 (m < 10 ? '0' : '') + m + ':' +
+                                                 (s < 10 ? '0' : '') + s;
+
+        if (h < 1) {
+          modalDeadlinePreviewBox.className = 'countdown-widget urgent';
+        } else if (h < 6) {
+          modalDeadlinePreviewBox.className = 'countdown-widget warning';
+        } else {
+          modalDeadlinePreviewBox.className = 'countdown-widget';
+        }
+      }
+
+      function openDeadlineModal() {
+        const s = state.state?.setup || {};
+        if (modalDeadlineHackathonName) modalDeadlineHackathonName.value = s.hackathonName || '';
+        const now = new Date();
+        const defaultStart = s.startTime ? toLocalDatetimeInput(s.startTime) : toLocalDatetimeInput(now);
+        const defaultEnd = s.deadline ? toLocalDatetimeInput(s.deadline) : toLocalDatetimeInput(new Date(now.getTime() + 24 * 3600 * 1000));
+        if (modalDeadlineStartTime) modalDeadlineStartTime.value = defaultStart;
+        if (modalDeadlineEndTime) modalDeadlineEndTime.value = defaultEnd;
+        if (modalDeadlineError) modalDeadlineError.style.display = 'none';
+        if (modalDeadlineConfirmBox) modalDeadlineConfirmBox.style.display = 'none';
+        if (btnDeadlineModalSave) btnDeadlineModalSave.style.display = 'inline-flex';
+        if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'none';
+        if (deadlineModalBackdrop) deadlineModalBackdrop.classList.add('open');
+        updateDeadlineModalPreview();
+      }
+
+      function closeDeadlineModal() {
+        if (deadlineModalBackdrop) deadlineModalBackdrop.classList.remove('open');
+        if (modalDeadlineError) modalDeadlineError.style.display = 'none';
+        if (modalDeadlineConfirmBox) modalDeadlineConfirmBox.style.display = 'none';
+        if (btnDeadlineModalSave) btnDeadlineModalSave.style.display = 'inline-flex';
+        if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'none';
+      }
+
+      if (btnEditDeadline) btnEditDeadline.addEventListener('click', openDeadlineModal);
+      if (btnDeadlineModalClose) btnDeadlineModalClose.addEventListener('click', closeDeadlineModal);
+      if (btnDeadlineModalCancel) btnDeadlineModalCancel.addEventListener('click', closeDeadlineModal);
+
+            function attachDateTimePickerEvents(inputEl) {
+        if (!inputEl) return;
+        inputEl.addEventListener('click', () => {
+          try {
+            if (typeof inputEl.showPicker === 'function') {
+              inputEl.showPicker();
+            }
+          } catch (_) {}
+        });
+      }
+      attachDateTimePickerEvents(modalDeadlineStartTime);
+      attachDateTimePickerEvents(modalDeadlineEndTime);
+      attachDateTimePickerEvents(setupStartTime);
+      attachDateTimePickerEvents(setupDeadline);
+
+      if (modalDeadlineEndTime) {
+        ['input', 'change'].forEach(evt => {
+          modalDeadlineEndTime.addEventListener(evt, () => {
+            if (modalDeadlineConfirmBox) modalDeadlineConfirmBox.style.display = 'none';
+            if (btnDeadlineModalSave) btnDeadlineModalSave.style.display = 'inline-flex';
+            if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'none';
+            updateDeadlineModalPreview();
+          });
+        });
+      }
+
+      if (modalDeadlineStartTime) {
+        ['input', 'change'].forEach(evt => {
+          modalDeadlineStartTime.addEventListener(evt, () => {
+            if (modalDeadlineConfirmBox) modalDeadlineConfirmBox.style.display = 'none';
+            if (btnDeadlineModalSave) btnDeadlineModalSave.style.display = 'inline-flex';
+            if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'none';
+            updateDeadlineModalPreview();
+          });
+        });
+      }
+
+      if (modalDeadlineStartTime) {
+        modalDeadlineStartTime.addEventListener('input', () => {
+          if (modalDeadlineConfirmBox) modalDeadlineConfirmBox.style.display = 'none';
+          if (btnDeadlineModalSave) btnDeadlineModalSave.style.display = 'inline-flex';
+          if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'none';
+          updateDeadlineModalPreview();
+        });
+      }
+
+      if (btnDeadlineModalSave) {
+        btnDeadlineModalSave.addEventListener('click', () => {
+          const name = modalDeadlineHackathonName.value.trim();
+          const startVal = modalDeadlineStartTime.value;
+          const endVal = modalDeadlineEndTime.value;
+
+          if (!name) {
+            modalDeadlineError.textContent = 'Hackathon name is required.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          if (!startVal) {
+            modalDeadlineError.textContent = 'Start date and time is required.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          if (!endVal) {
+            modalDeadlineError.textContent = 'Deadline date and time is required.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          const sTime = new Date(startVal).getTime();
+          const dTime = new Date(endVal).getTime();
+
+          if (isNaN(sTime) || sTime <= 0) {
+            modalDeadlineError.textContent = 'Invalid start time date format.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          if (isNaN(dTime) || dTime <= 0) {
+            modalDeadlineError.textContent = 'Invalid deadline date format.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          if (dTime <= sTime) {
+            modalDeadlineError.textContent = 'Deadline must be later than the start time.';
+            modalDeadlineError.style.display = 'block';
+            return;
+          }
+
+          modalDeadlineError.style.display = 'none';
+
+          // Show confirmation step before persisting
+          if (modalDeadlineConfirmBox && modalDeadlineConfirmText) {
+            modalDeadlineConfirmText.textContent = 'Change deadline for "' + name + '" to ' + new Date(endVal).toLocaleString() + '? This will immediately synchronize and update the countdown for all participants.';
+            modalDeadlineConfirmBox.style.display = 'block';
+          }
+          btnDeadlineModalSave.style.display = 'none';
+          if (btnDeadlineModalConfirm) btnDeadlineModalConfirm.style.display = 'inline-flex';
+        });
+      }
+
+      if (btnDeadlineModalConfirm) {
+        btnDeadlineModalConfirm.addEventListener('click', () => {
+          const name = modalDeadlineHackathonName.value.trim();
+          const startIso = new Date(modalDeadlineStartTime.value).toISOString();
+          const endIso = new Date(modalDeadlineEndTime.value).toISOString();
+
+          if (vscode) {
+            vscode.postMessage({
+              command: 'update_deadline',
+              updates: {
+                hackathonName: name,
+                startTime: startIso,
+                deadline: endIso
+              }
+            });
+          }
+
+          closeDeadlineModal();
+          updateCountdown();
+        });
+      }
+
+      // Deliverable URL Modal Event Listeners
+      function closeDeliverableModal() {
+        if (deliverableModalBackdrop) {
+          deliverableModalBackdrop.classList.remove('open');
+        }
+      }
+
+      function isValidHttpUrl(str) {
+        try {
+          const u = new URL(str);
+          return u.protocol === 'http:' || u.protocol === 'https:';
+        } catch (_) {
+          return false;
+        }
+      }
+
+      if (btnDeliverableModalClose) btnDeliverableModalClose.addEventListener('click', closeDeliverableModal);
+      if (btnDeliverableModalCancel) btnDeliverableModalCancel.addEventListener('click', closeDeliverableModal);
+
+      if (btnDeliverableModalClear) {
+        btnDeliverableModalClear.addEventListener('click', () => {
+          const dId = modalDeliverableId.value;
+          if (dId && vscode) {
+            vscode.postMessage({
+              command: 'update_deliverable',
+              id: dId,
+              updates: { url: '' }
+            });
+            closeDeliverableModal();
+          }
+        });
+      }
+
+      if (btnDeliverableModalSave) {
+        btnDeliverableModalSave.addEventListener('click', () => {
+          const dId = modalDeliverableId.value;
+          const urlVal = modalDeliverableUrl.value.trim();
+
+          if (urlVal !== '' && !isValidHttpUrl(urlVal)) {
+            modalDeliverableError.textContent = 'Please enter a valid HTTP or HTTPS URL (e.g. https://github.com/...), or clear to remove.';
+            modalDeliverableError.style.display = 'block';
+            return;
+          }
+
+          if (dId && vscode) {
+            vscode.postMessage({
+              command: 'update_deliverable',
+              id: dId,
+              updates: { url: urlVal }
+            });
+            closeDeliverableModal();
+          }
+        });
+      }
+
+      // Custom Timer Controls Event Listeners
+      if (btnTimerStart) {
+        btnTimerStart.addEventListener('click', () => {
+          const h = parseInt(timerInputHours.value, 10) || 0;
+          const m = parseInt(timerInputMinutes.value, 10) || 0;
+          const lbl = timerInputLabel.value.trim() || 'Custom Timer';
+          const dur = (h * 3600 + m * 60) * 1000;
+
+          if (dur <= 0) {
+            alert('Timer duration must be greater than zero minutes.');
+            return;
+          }
+
+          if (vscode) {
+            vscode.postMessage({
+              command: 'timer_control',
+              action: 'start',
+              params: { hours: h, minutes: m, label: lbl }
+            });
+          }
+        });
+      }
+
+      if (btnTimerPause) {
+        btnTimerPause.addEventListener('click', () => {
+          if (vscode) {
+            vscode.postMessage({ command: 'timer_control', action: 'pause' });
+          }
+        });
+      }
+
+      if (btnTimerResume) {
+        btnTimerResume.addEventListener('click', () => {
+          if (vscode) {
+            vscode.postMessage({ command: 'timer_control', action: 'resume' });
+          }
+        });
+      }
+
+      if (btnTimerReset) {
+        btnTimerReset.addEventListener('click', () => {
+          if (vscode) {
+            vscode.postMessage({ command: 'timer_control', action: 'reset' });
+          }
+        });
+      }
 
       btnRefreshGit.addEventListener('click', () => {
         if (vscode) vscode.postMessage({ command: 'refresh_git' });
@@ -1650,6 +2424,15 @@ export function renderHackathonHtml(initialState: WebviewState): string {
           if (msg.sessionCode !== undefined) state.sessionCode = msg.sessionCode;
           if (msg.userName !== undefined) state.userName = msg.userName;
           renderAll();
+        } else if (msg.type === 'error') {
+          if (deadlineModalBackdrop && deadlineModalBackdrop.classList.contains('open')) {
+            modalDeadlineError.textContent = msg.message || 'Operation failed';
+            modalDeadlineError.style.display = 'block';
+          }
+          if (deliverableModalBackdrop && deliverableModalBackdrop.classList.contains('open')) {
+            modalDeliverableError.textContent = msg.message || 'Operation failed';
+            modalDeliverableError.style.display = 'block';
+          }
         } else if (msg.type === 'git_info') {
           state.gitInfo = msg.gitInfo;
           renderPulseAndGit();

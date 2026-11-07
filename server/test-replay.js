@@ -151,24 +151,48 @@ async function run() {
     });
     await guest.nextMsg('suggest_result');
 
-    // 6. Host ends session
+    // 6. Unauthorized guest tries to end session -> rejected
+    guest.send({ t: 'end_session' });
+    const unauthEndErr = await guest.nextMsg('error');
+    assert.strictEqual(unauthEndErr.msg, 'only superhost can end session', 'Guest cannot end session');
+
+    // 7. Host ends session gracefully via end_session
+    host.send({ t: 'end_session' });
+
+    // Host (socket still open) receives replay_ready, summary, and ended
+    const hostReadyMsg = await host.nextMsg('replay_ready');
+    assert.strictEqual(hostReadyMsg.t, 'replay_ready');
+    assert.ok(hostReadyMsg.id, 'Host replay_ready must contain id');
+    const replayId = hostReadyMsg.id;
+    assert.match(replayId, /^[a-f0-9]{12}$/, 'Replay id must be 12-char hex string');
+    assert.strictEqual(hostReadyMsg.code, code, 'replay_ready must include session code');
+
+    const hostSummaryMsg = await host.nextMsg('summary');
+    assert.strictEqual(hostSummaryMsg.t, 'summary');
+    assert.strictEqual(hostSummaryMsg.edits, 2);
+
+    const hostEndedMsg = await host.nextMsg('ended');
+    assert.strictEqual(hostEndedMsg.t, 'ended');
+
+    // Guest also receives replay_ready, summary, and ended
+    const guestReadyMsg = await guest.nextMsg('replay_ready');
+    assert.strictEqual(guestReadyMsg.t, 'replay_ready');
+    assert.strictEqual(guestReadyMsg.id, replayId);
+    assert.strictEqual(guestReadyMsg.code, code);
+
+    const guestSummaryMsg = await guest.nextMsg('summary');
+    assert.strictEqual(guestSummaryMsg.t, 'summary');
+    assert.strictEqual(guestSummaryMsg.edits, 2, 'Summary edits count must be 2');
+    assert.strictEqual(guestSummaryMsg.suggested, 1, 'Summary suggested count must be 1');
+    assert.strictEqual(guestSummaryMsg.accepted, 1, 'Summary accepted count must be 1');
+    assert.ok(guestSummaryMsg.participants.includes('HostAlice'), 'Summary contains HostAlice');
+    assert.ok(guestSummaryMsg.participants.includes('GuestBob'), 'Summary contains GuestBob');
+
+    const guestEndedMsg = await guest.nextMsg('ended');
+    assert.strictEqual(guestEndedMsg.t, 'ended');
+
+    // Host disconnects cleanly now that session has ended
     host.close();
-
-    // 7. Asserts: replay_ready was received by host (or both)
-    const readyMsg = await guest.nextMsg('replay_ready');
-    assert.strictEqual(readyMsg.t, 'replay_ready');
-    assert.ok(readyMsg.id, 'replay_ready must contain id');
-    const replayId = readyMsg.id;
-    assert.match(replayId, /^[a-f0-9]{12}$/, 'replay id must be 12-char hex string');
-
-    // Summary was sent
-    const summaryMsg = await guest.nextMsg('summary');
-    assert.strictEqual(summaryMsg.t, 'summary');
-    assert.strictEqual(summaryMsg.edits, 2, 'Summary edits count must be 2');
-    assert.strictEqual(summaryMsg.suggested, 1, 'Summary suggested count must be 1');
-    assert.strictEqual(summaryMsg.accepted, 1, 'Summary accepted count must be 1');
-    assert.ok(summaryMsg.participants.includes('HostAlice'), 'Summary contains HostAlice');
-    assert.ok(summaryMsg.participants.includes('GuestBob'), 'Summary contains GuestBob');
 
     // 8. Asserts: replay_get returns the events in order, with increasing offsets
     guest.send({ t: 'replay_get', id: replayId });
@@ -231,7 +255,46 @@ async function run() {
     assert.strictEqual(latestMsg.data.code, code);
     authClient.close();
 
-    // 14. Asserts: Empty and malformed file resilience
+    // 14. Asserts: Retrieve by session code
+    const byCodeClient = await connect();
+    byCodeClient.send({ t: 'replay_get', id: code, name: 'GuestBob' });
+    const codeMsg = await byCodeClient.nextMsg('replay');
+    assert.strictEqual(codeMsg.t, 'replay');
+    assert.strictEqual(codeMsg.data.id, replayId, 'Retrieval by 6-char session code works');
+    assert.strictEqual(codeMsg.data.code, code);
+
+    // Non-existent session code
+    byCodeClient.send({ t: 'replay_get', id: 'NOCODE', name: 'GuestBob' });
+    const noCodeErr = await byCodeClient.nextMsg('error');
+    assert.strictEqual(noCodeErr.msg, 'no replay', 'Non-existent session code returns no replay');
+    byCodeClient.close();
+
+    // 15. Asserts: Empty session test (session with no edits)
+    const emptyHost = await connect();
+    emptyHost.send({ t: 'create', name: 'EmptyHost' });
+    const emptyCreated = await emptyHost.nextMsg('created');
+    const emptyCode = emptyCreated.code;
+
+    // Host ends session immediately without any edits
+    emptyHost.send({ t: 'end_session' });
+    const emptyReady = await emptyHost.nextMsg('replay_ready');
+    assert.ok(emptyReady.id, 'Empty session has replay id');
+    const emptySummary = await emptyHost.nextMsg('summary');
+    assert.strictEqual(emptySummary.edits, 0, 'Empty session has 0 edits');
+    await emptyHost.nextMsg('ended');
+    emptyHost.close();
+
+    // Retrieve empty session replay
+    const emptyRetrieveClient = await connect();
+    emptyRetrieveClient.send({ t: 'replay_get', id: emptyReady.id, name: 'EmptyHost' });
+    const emptyReplayMsg = await emptyRetrieveClient.nextMsg('replay');
+    assert.strictEqual(emptyReplayMsg.t, 'replay');
+    assert.strictEqual(emptyReplayMsg.data.id, emptyReady.id);
+    assert.strictEqual(emptyReplayMsg.data.code, emptyCode);
+    assert.strictEqual(emptyReplayMsg.data.snapshots.length, 0, 'Empty session has 0 snapshots in data');
+    emptyRetrieveClient.close();
+
+    // 16. Asserts: Empty and malformed file resilience
     const recDir = path.join(__dirname, 'recordings');
     const emptyPath = path.join(recDir, '000000000000.json');
     const malformedPath = path.join(recDir, '111111111111.json');

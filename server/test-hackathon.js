@@ -14,6 +14,9 @@
  * 9. Next Best Action recommendations (verifying explainable, deterministic output)
  * 10. Isolation between different sessions (Session A data not accessible/modifiable by Session B)
  * 11. Core collaborative regression check
+ * 12. Deliverable URL updates, validation, clearing, unauthorized rejection, and persistence
+ * 13. Custom Collaborative Timer (host-only controls, start/pause/resume/reset/expiration, sync, persistence)
+ * 14. Editable Hackathon Deadline & Start Time (host-only controls, validation, sync, expired handling, custom timer independence, persistence)
  */
 
 const assert = require('node:assert');
@@ -528,6 +531,412 @@ async function run() {
       recordFail('10. Isolation between sessions', e);
     }
 
+
+    // TEST 12: Deliverable URL updates, validation, clearing, unauthorized rejection, and persistence
+    try {
+      const host = await connect();
+      host.send({ t: 'create', name: 'DelivHost' });
+      const c = await host.nextMsg('created');
+      const sessionCode = c.code;
+
+      const guest = await connect();
+      guest.send({ t: 'join', code: sessionCode, name: 'DelivGuest' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'DelivGuest', approve: true });
+      await guest.nextMsg('joined');
+      await guest.nextMsg('hackathon_sync');
+
+      // 1. Read-only guest attempts to update deliverable -> rejected
+      guest.send({
+        t: 'hackathon_deliverable_update',
+        id: 'del_repo',
+        updates: { url: 'https://github.com/evil/repo' },
+      });
+      const unauthErr = await guest.nextMsg('error');
+      assert.strictEqual(unauthErr.msg, 'Read-only participants cannot update deliverables');
+
+      // 2. Host updates each of the 5 deliverables with valid URLs
+      const deliverableUrls = {
+        del_repo: 'https://github.com/parallel-team/hackloop-parallel',
+        del_demo: 'https://demo.parallel-live.dev',
+        del_slides: 'https://docs.google.com/presentation/d/12345/edit',
+        del_docs: 'https://docs.parallel-live.dev/architecture',
+        del_portal: 'https://devpost.com/software/parallel-collaborative',
+      };
+
+      for (const [id, url] of Object.entries(deliverableUrls)) {
+        host.send({
+          t: 'hackathon_deliverable_update',
+          id,
+          updates: { url },
+        });
+
+        const syncHost = await host.nextMsg('hackathon_sync');
+        const syncGuest = await guest.nextMsg('hackathon_sync');
+
+        const dHost = syncHost.state.deliverables.find((d) => d.id === id);
+        const dGuest = syncGuest.state.deliverables.find((d) => d.id === id);
+
+        assert.ok(dHost, `Deliverable ${id} must exist in host state`);
+        assert.strictEqual(dHost.url, url, `Host deliverable ${id} URL matches`);
+        assert.strictEqual(dGuest.url, url, `Guest deliverable ${id} received broadcast URL`);
+      }
+
+      // 3. Invalid URL validation rejection (e.g. ftp:// or not a URL)
+      host.send({
+        t: 'hackathon_deliverable_update',
+        id: 'del_repo',
+        updates: { url: 'ftp://invalid-protocol.com/repo' },
+      });
+      const invalidUrlErr = await host.nextMsg('error');
+      assert.strictEqual(invalidUrlErr.msg, 'Invalid URL. Must be a valid HTTP or HTTPS URL.');
+
+      host.send({
+        t: 'hackathon_deliverable_update',
+        id: 'del_repo',
+        updates: { url: 'not-a-valid-url' },
+      });
+      const invalidUrlErr2 = await host.nextMsg('error');
+      assert.strictEqual(invalidUrlErr2.msg, 'Invalid URL. Must be a valid HTTP or HTTPS URL.');
+
+      // 4. URL clearing (empty string)
+      host.send({
+        t: 'hackathon_deliverable_update',
+        id: 'del_repo',
+        updates: { url: '' },
+      });
+      const clearSyncHost = await host.nextMsg('hackathon_sync');
+      const clearSyncGuest = await guest.nextMsg('hackathon_sync');
+      const clearedDel = clearSyncHost.state.deliverables.find((d) => d.id === 'del_repo');
+      assert.strictEqual(clearedDel.url, '', 'Deliverable URL should be successfully cleared');
+      assert.strictEqual(clearSyncGuest.state.deliverables.find((d) => d.id === 'del_repo').url, '');
+
+      // 5. Persistence verification after disk reload
+      clearSession(sessionCode);
+      const reloader = await connect();
+      reloader.send({ t: 'join', code: sessionCode, name: 'Reloader' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'Reloader', approve: true });
+      await reloader.nextMsg('joined');
+
+      reloader.send({ t: 'hackathon_get' });
+      const reloadedSync = await reloader.nextMsg('hackathon_sync');
+      const persistedDemo = reloadedSync.state.deliverables.find((d) => d.id === 'del_demo');
+      assert.strictEqual(persistedDemo.url, deliverableUrls.del_demo, 'Deliverable URL persisted across reload');
+
+      recordPass('12. Deliverable URL update, validation, clearing, authorization, and persistence verified');
+      host.close();
+      guest.close();
+      reloader.close();
+    } catch (e) {
+      recordFail('12. Deliverable URL updates & validation', e);
+    }
+
+    // TEST 13: Custom Collaborative Timer
+    try {
+      const host = await connect();
+      host.send({ t: 'create', name: 'TimerHost' });
+      const c = await host.nextMsg('created');
+      const sessionCode = c.code;
+
+      const guest = await connect();
+      guest.send({ t: 'join', code: sessionCode, name: 'TimerGuest' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'TimerGuest', approve: true });
+      await guest.nextMsg('joined');
+      await guest.nextMsg('hackathon_sync');
+
+      // 1. Initial State has timer configured
+      host.send({ t: 'hackathon_get' });
+      const initSync = await host.nextMsg('hackathon_sync');
+      assert.ok(initSync.state.timer, 'Timer must be present in hackathon state');
+      assert.strictEqual(initSync.state.timer.status, 'idle');
+      assert.strictEqual(initSync.state.timer.durationMs, 25 * 60 * 1000);
+
+      // 2. Unauthorized guest attempt -> rejected
+      guest.send({
+        t: 'hackathon_timer_control',
+        action: 'start',
+      });
+      const unauthTimerErr = await guest.nextMsg('error');
+      assert.strictEqual(unauthTimerErr.msg, 'Only the superhost can control the custom timer');
+
+      // 3. Host configures custom timer (hours, minutes, label)
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'configure',
+        params: { hours: 1, minutes: 15, label: 'MVP Sprint Alpha' },
+      });
+      const configHostSync = await host.nextMsg('hackathon_sync');
+      const configGuestSync = await guest.nextMsg('hackathon_sync');
+      assert.strictEqual(configHostSync.state.timer.durationMs, (1 * 3600 + 15 * 60) * 1000);
+      assert.strictEqual(configHostSync.state.timer.label, 'MVP Sprint Alpha');
+      assert.strictEqual(configHostSync.state.timer.status, 'idle');
+      assert.strictEqual(configGuestSync.state.timer.durationMs, configHostSync.state.timer.durationMs);
+
+      // 4. Host starts the timer
+      const beforeStart = Date.now();
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'start',
+      });
+      const startHostSync = await host.nextMsg('hackathon_sync');
+      const startGuestSync = await guest.nextMsg('hackathon_sync');
+            assert.strictEqual(startHostSync.state.timer.status, 'running');
+      assert.ok(startHostSync.state.timer.startedAt >= beforeStart - 1000);
+      assert.ok(startHostSync.state.timer.endsAt > Date.now());
+      assert.strictEqual(startGuestSync.state.timer.status, 'running');
+      assert.strictEqual(startGuestSync.state.timer.endsAt, startHostSync.state.timer.endsAt);
+
+      // 5. Host pauses the timer
+      await new Promise((r) => setTimeout(r, 100));
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'pause',
+      });
+      const pauseHostSync = await host.nextMsg('hackathon_sync');
+      const pauseGuestSync = await guest.nextMsg('hackathon_sync');
+      assert.strictEqual(pauseHostSync.state.timer.status, 'paused');
+      assert.ok(pauseHostSync.state.timer.remainingMs > 0);
+      assert.ok(pauseHostSync.state.timer.remainingMs < pauseHostSync.state.timer.durationMs);
+      assert.strictEqual(pauseHostSync.state.timer.endsAt, null);
+      assert.strictEqual(pauseGuestSync.state.timer.status, 'paused');
+      const pausedRem = pauseHostSync.state.timer.remainingMs;
+
+      // 6. Host resumes the timer
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'resume',
+      });
+      const resumeHostSync = await host.nextMsg('hackathon_sync');
+      const resumeGuestSync = await guest.nextMsg('hackathon_sync');
+      assert.strictEqual(resumeHostSync.state.timer.status, 'running');
+      assert.ok(resumeHostSync.state.timer.endsAt > Date.now());
+      assert.strictEqual(resumeGuestSync.state.timer.status, 'running');
+
+      // 7. Host resets the timer
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'reset',
+      });
+      const resetHostSync = await host.nextMsg('hackathon_sync');
+      const resetGuestSync = await guest.nextMsg('hackathon_sync');
+      assert.strictEqual(resetHostSync.state.timer.status, 'idle');
+      assert.strictEqual(resetHostSync.state.timer.remainingMs, resetHostSync.state.timer.durationMs);
+      assert.strictEqual(resetHostSync.state.timer.endsAt, null);
+      assert.strictEqual(resetGuestSync.state.timer.status, 'idle');
+
+      // 8. Timer expiration handling
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'start',
+        params: { durationMs: 200, label: 'Fast Sprint' },
+      });
+      await host.nextMsg('hackathon_sync');
+      await guest.nextMsg('hackathon_sync');
+
+      // Wait for timer to expire
+      await new Promise((r) => setTimeout(r, 350));
+      host.send({ t: 'hackathon_get' });
+      const expiredSync = await host.nextMsg('hackathon_sync');
+      assert.strictEqual(expiredSync.state.timer.status, 'completed');
+      assert.strictEqual(expiredSync.state.timer.remainingMs, 0);
+
+      // 9. Reconnection & state reload
+      clearSession(sessionCode);
+      const reconnected = await connect();
+      reconnected.send({ t: 'join', code: sessionCode, name: 'TimerReloader' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'TimerReloader', approve: true });
+      await reconnected.nextMsg('joined');
+
+      reconnected.send({ t: 'hackathon_get' });
+      const reloadedTimerSync = await reconnected.nextMsg('hackathon_sync');
+      assert.ok(reloadedTimerSync.state.timer);
+      assert.strictEqual(reloadedTimerSync.state.timer.label, 'Fast Sprint');
+      assert.strictEqual(reloadedTimerSync.state.timer.status, 'completed');
+
+      recordPass('13. Custom Collaborative Timer controls, sync, expiration, and persistence verified');
+      host.close();
+      guest.close();
+      reconnected.close();
+    } catch (e) {
+      recordFail('13. Custom Collaborative Timer', e);
+    }
+
+
+    // TEST 14: Editable Hackathon Deadline & Start Time Lifecycle
+    try {
+      const host = await connect();
+      host.send({ t: 'create', name: 'DeadlineHost' });
+      const c = await host.nextMsg('created');
+      const sessionCode = c.code;
+
+      const guest = await connect();
+      guest.send({ t: 'join', code: sessionCode, name: 'DeadlineGuest' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'DeadlineGuest', approve: true });
+      await guest.nextMsg('joined');
+      await guest.nextMsg('hackathon_sync'); // consume initial join sync
+
+      // 1. Unauthorized guest attempt to update deadline -> rejected
+      guest.send({
+        t: 'hackathon_update_deadline',
+        updates: { deadline: new Date(Date.now() + 86400000).toISOString() },
+      });
+      const unauthErr1 = await guest.nextMsg('error');
+      assert.strictEqual(unauthErr1.msg, 'Only the superhost can edit the hackathon deadline and start time');
+
+      guest.send({
+        t: 'hackathon_update_setup',
+        setup: { deadline: new Date(Date.now() + 86400000).toISOString() },
+      });
+      const unauthErr2 = await guest.nextMsg('error');
+      assert.strictEqual(unauthErr2.msg, 'Only hosts can configure hackathon settings');
+
+      // 2. Host tests invalid date/time formats
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: { deadline: 'invalid-deadline-string' },
+      });
+      const errInvDeadline = await host.nextMsg('error');
+      assert.strictEqual(errInvDeadline.msg, 'Invalid deadline date format');
+
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: { startTime: 'invalid-start-string' },
+      });
+      const errInvStart = await host.nextMsg('error');
+      assert.strictEqual(errInvStart.msg, 'Invalid start time date format');
+
+      // 3. Host tests deadline earlier than or equal to start time
+      const testStart = new Date(Date.now() + 20000000).toISOString();
+      const earlierDeadline = new Date(Date.now() + 10000000).toISOString();
+
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: { startTime: testStart, deadline: earlierDeadline },
+      });
+      const errEarlier = await host.nextMsg('error');
+      assert.strictEqual(errEarlier.msg, 'Deadline must be after start time');
+
+      // 4. Host successfully updates deadline
+      const now = Date.now();
+      const validStartTime = new Date(now).toISOString();
+      const validDeadline = new Date(now + 48 * 3600 * 1000).toISOString(); // 48 hours later
+      const newHackathonName = 'AI Grand Hackathon 2026';
+
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: {
+          hackathonName: newHackathonName,
+          startTime: validStartTime,
+          deadline: validDeadline,
+        },
+      });
+
+      const hostSync1 = await host.nextMsg('hackathon_sync');
+      const guestSync1 = await guest.nextMsg('hackathon_sync');
+
+      assert.strictEqual(hostSync1.state.setup.hackathonName, newHackathonName);
+      assert.strictEqual(hostSync1.state.setup.startTime, validStartTime);
+      assert.strictEqual(hostSync1.state.setup.deadline, validDeadline);
+
+      // Verify guest received exact synchronization
+      assert.strictEqual(guestSync1.state.setup.hackathonName, newHackathonName);
+      assert.strictEqual(guestSync1.state.setup.startTime, validStartTime);
+      assert.strictEqual(guestSync1.state.setup.deadline, validDeadline);
+
+      // 5. Host updates start time only
+      const updatedStartTime = new Date(now + 1000).toISOString();
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: { startTime: updatedStartTime },
+      });
+
+      const hostSync2 = await host.nextMsg('hackathon_sync');
+      const guestSync2 = await guest.nextMsg('hackathon_sync');
+
+      assert.strictEqual(hostSync2.state.setup.startTime, updatedStartTime);
+      assert.strictEqual(hostSync2.state.setup.deadline, validDeadline);
+      assert.strictEqual(guestSync2.state.setup.startTime, updatedStartTime);
+
+      // 6. Expired / past deadline handling
+      const pastStart = new Date(now - 7200000).toISOString(); // 2 hours ago
+      const pastDeadline = new Date(now - 3600000).toISOString(); // 1 hour ago
+
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: {
+          startTime: pastStart,
+          deadline: pastDeadline,
+        },
+      });
+
+      const hostSyncPast = await host.nextMsg('hackathon_sync');
+      const guestSyncPast = await guest.nextMsg('hackathon_sync');
+
+      assert.strictEqual(hostSyncPast.state.setup.startTime, pastStart);
+      assert.strictEqual(hostSyncPast.state.setup.deadline, pastDeadline);
+      assert.strictEqual(guestSyncPast.state.setup.deadline, pastDeadline);
+      assert.ok(new Date(guestSyncPast.state.setup.deadline).getTime() < Date.now(), 'Deadline is in the past');
+
+      // 7. Custom Timer continues independently after deadline changes
+      host.send({
+        t: 'hackathon_timer_control',
+        action: 'start',
+        params: { durationMs: 1800000, label: 'Sprint During Deadline Change' },
+      });
+      const timerSyncHost = await host.nextMsg('hackathon_sync');
+      await guest.nextMsg('hackathon_sync');
+
+      assert.strictEqual(timerSyncHost.state.timer.status, 'running');
+      assert.strictEqual(timerSyncHost.state.timer.label, 'Sprint During Deadline Change');
+      const timerEndsAt = timerSyncHost.state.timer.endsAt;
+
+      // Host changes deadline again while custom timer is running
+      const newFutureDeadline = new Date(Date.now() + 72 * 3600 * 1000).toISOString();
+      host.send({
+        t: 'hackathon_update_deadline',
+        updates: { deadline: newFutureDeadline },
+      });
+
+      const hostSyncAfterTimer = await host.nextMsg('hackathon_sync');
+      const guestSyncAfterTimer = await guest.nextMsg('hackathon_sync');
+
+      assert.strictEqual(hostSyncAfterTimer.state.setup.deadline, newFutureDeadline);
+      assert.strictEqual(guestSyncAfterTimer.state.setup.deadline, newFutureDeadline);
+
+      // Custom timer must be completely untouched and independent
+      assert.strictEqual(hostSyncAfterTimer.state.timer.status, 'running');
+      assert.strictEqual(hostSyncAfterTimer.state.timer.label, 'Sprint During Deadline Change');
+      assert.strictEqual(hostSyncAfterTimer.state.timer.endsAt, timerEndsAt);
+      assert.strictEqual(guestSyncAfterTimer.state.timer.status, 'running');
+      assert.strictEqual(guestSyncAfterTimer.state.timer.endsAt, timerEndsAt);
+
+      // 8. Persistence after reload / reconnect
+      clearSession(sessionCode);
+      const reloader = await connect();
+      reloader.send({ t: 'join', code: sessionCode, name: 'DeadlineReloader' });
+      await host.nextMsg('join_request');
+      host.send({ t: 'decide', name: 'DeadlineReloader', approve: true });
+      await reloader.nextMsg('joined');
+      await reloader.nextMsg('hackathon_sync');
+
+      reloader.send({ t: 'hackathon_get' });
+      const reloadedSync = await reloader.nextMsg('hackathon_sync');
+      assert.strictEqual(reloadedSync.state.setup.hackathonName, newHackathonName);
+      assert.strictEqual(reloadedSync.state.setup.deadline, newFutureDeadline);
+      assert.strictEqual(reloadedSync.state.timer.label, 'Sprint During Deadline Change');
+
+      recordPass('14. Editable Hackathon Deadline & Start Time Lifecycle verified');
+      host.close();
+      guest.close();
+      reloader.close();
+    } catch (e) {
+      recordFail('14. Editable Hackathon Deadline', e);
+    }
+
     // TEST 11: Core collaborative regression verification
     try {
       const host = await connect();
@@ -554,7 +963,7 @@ async function run() {
 
   console.log('\n--- Test Results ---');
   if (pass) {
-    console.log('ALL 11 HACKATHON TEST SUITES PASSED! 🎉');
+    console.log('ALL 14 HACKATHON TEST SUITES PASSED! 🎉');
     process.exit(0);
   } else {
     console.error(`FAILED with ${errors.length} error(s).`);

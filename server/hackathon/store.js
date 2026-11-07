@@ -1,3 +1,12 @@
+function isValidHttpUrl(string) {
+  try {
+    const url = new URL(string);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+}
+
 'use strict';
 
 const crypto = require('crypto');
@@ -109,6 +118,15 @@ function createDefaultState(sessionCode, hostName = 'Host') {
         completedAt: null,
       },
     ],
+    timer: {
+      durationMs: 25 * 60 * 1000,
+      remainingMs: 25 * 60 * 1000,
+      startedAt: null,
+      endsAt: null,
+      status: 'idle',
+      label: 'MVP Sprint',
+      updatedAt: now,
+    },
     deliverables: [
       { id: 'del_repo', label: 'GitHub Repository', url: '', completed: false },
       { id: 'del_demo', label: 'Live Demo URL', url: '', completed: false },
@@ -153,6 +171,27 @@ function getHackathonState(sessionCode, hostName = 'Host') {
     }
     sessionStates.set(sessionCode, state);
   }
+  if (!state.timer) {
+    state.timer = {
+      durationMs: 25 * 60 * 1000,
+      remainingMs: 25 * 60 * 1000,
+      startedAt: null,
+      endsAt: null,
+      status: 'idle',
+      label: 'MVP Sprint',
+      updatedAt: Date.now(),
+    };
+  }
+
+  if (state.timer.status === 'running' && state.timer.endsAt && Date.now() >= state.timer.endsAt) {
+    state.timer.status = 'completed';
+    state.timer.remainingMs = 0;
+    state.timer.startedAt = null;
+    state.timer.endsAt = null;
+    state.timer.updatedAt = Date.now();
+    saveHackathon(sessionCode, state);
+  }
+
   return state;
 }
 
@@ -177,26 +216,39 @@ function updateSetup(sessionCode, updates, authorName) {
   const state = getHackathonState(sessionCode, authorName);
   if (!state) return { ok: false, error: 'Session not found' };
 
-  if (updates.deadline) {
+  const s = state.setup;
+
+  if (updates.deadline !== undefined) {
     const dTime = new Date(updates.deadline).getTime();
     if (isNaN(dTime) || dTime <= 0) {
       return { ok: false, error: 'Invalid deadline date format' };
     }
-    if (updates.startTime) {
-      const sTime = new Date(updates.startTime).getTime();
-      if (!isNaN(sTime) && dTime <= sTime) {
-        return { ok: false, error: 'Deadline must be after start time' };
-      }
+  }
+
+  if (updates.startTime !== undefined) {
+    const sTime = new Date(updates.startTime).getTime();
+    if (isNaN(sTime) || sTime <= 0) {
+      return { ok: false, error: 'Invalid start time date format' };
     }
   }
 
-  const s = state.setup;
+  const finalStart = updates.startTime !== undefined
+    ? new Date(updates.startTime).getTime()
+    : (s.startTime ? new Date(s.startTime).getTime() : NaN);
+  const finalDeadline = updates.deadline !== undefined
+    ? new Date(updates.deadline).getTime()
+    : (s.deadline ? new Date(s.deadline).getTime() : NaN);
+
+  if (!isNaN(finalStart) && !isNaN(finalDeadline) && finalDeadline <= finalStart) {
+    return { ok: false, error: 'Deadline must be after start time' };
+  }
+
   if (typeof updates.hackathonName === 'string') s.hackathonName = updates.hackathonName.trim().slice(0, 100);
   if (typeof updates.projectName === 'string') s.projectName = updates.projectName.trim().slice(0, 100);
   if (typeof updates.description === 'string') s.description = updates.description.trim().slice(0, 500);
   if (typeof updates.repositoryUrl === 'string') s.repositoryUrl = updates.repositoryUrl.trim().slice(0, 250);
-  if (updates.startTime) s.startTime = new Date(updates.startTime).toISOString();
-  if (updates.deadline) s.deadline = new Date(updates.deadline).toISOString();
+  if (updates.startTime !== undefined) s.startTime = new Date(updates.startTime).toISOString();
+  if (updates.deadline !== undefined) s.deadline = new Date(updates.deadline).toISOString();
   if (Array.isArray(updates.teamMembers)) {
     s.teamMembers = updates.teamMembers.map((m) => String(m).trim().slice(0, 40)).filter(Boolean);
   }
@@ -206,6 +258,53 @@ function updateSetup(sessionCode, updates, authorName) {
   s.updatedAt = Date.now();
 
   addPulseEvent(state, 'setup_updated', authorName, `${authorName} updated hackathon setup.`);
+  saveHackathon(sessionCode, state);
+  return { ok: true, state };
+}
+
+function updateDeadline(sessionCode, updates, authorName) {
+  const state = getHackathonState(sessionCode, authorName);
+  if (!state) return { ok: false, error: 'Session not found' };
+
+  const s = state.setup;
+
+  if (updates.deadline !== undefined) {
+    const dTime = new Date(updates.deadline).getTime();
+    if (isNaN(dTime) || dTime <= 0) {
+      return { ok: false, error: 'Invalid deadline date format' };
+    }
+  }
+
+  if (updates.startTime !== undefined) {
+    const sTime = new Date(updates.startTime).getTime();
+    if (isNaN(sTime) || sTime <= 0) {
+      return { ok: false, error: 'Invalid start time date format' };
+    }
+  }
+
+  const finalStart = updates.startTime !== undefined
+    ? new Date(updates.startTime).getTime()
+    : (s.startTime ? new Date(s.startTime).getTime() : NaN);
+  const finalDeadline = updates.deadline !== undefined
+    ? new Date(updates.deadline).getTime()
+    : (s.deadline ? new Date(s.deadline).getTime() : NaN);
+
+  if (!isNaN(finalStart) && !isNaN(finalDeadline) && finalDeadline <= finalStart) {
+    return { ok: false, error: 'Deadline must be after start time' };
+  }
+
+  if (typeof updates.hackathonName === 'string' && updates.hackathonName.trim()) {
+    s.hackathonName = updates.hackathonName.trim().slice(0, 100);
+  }
+  if (updates.startTime !== undefined) {
+    s.startTime = new Date(updates.startTime).toISOString();
+  }
+  if (updates.deadline !== undefined) {
+    s.deadline = new Date(updates.deadline).toISOString();
+  }
+  s.updatedAt = Date.now();
+
+  addPulseEvent(state, 'deadline_updated', authorName, `${authorName} updated hackathon deadline to ${new Date(s.deadline).toLocaleString()}.`);
   saveHackathon(sessionCode, state);
   return { ok: true, state };
 }
@@ -370,15 +469,154 @@ function updateDeliverable(sessionCode, deliverableId, updates, authorName) {
   const del = (state.deliverables || []).find((d) => d.id === deliverableId);
   if (!del) return { ok: false, error: 'Deliverable not found' };
 
-  if (typeof updates.url === 'string') {
-    del.url = updates.url.trim().slice(0, 300);
+  if (updates.url !== undefined) {
+    if (typeof updates.url !== 'string') {
+      return { ok: false, error: 'URL must be a string' };
+    }
+    const trimmed = updates.url.trim();
+    if (trimmed === '') {
+      del.url = '';
+    } else {
+      if (!isValidHttpUrl(trimmed)) {
+        return { ok: false, error: 'Invalid URL. Must be a valid HTTP or HTTPS URL.' };
+      }
+      del.url = trimmed.slice(0, 500);
+    }
+    addPulseEvent(state, 'deliverable_updated', authorName, `${authorName} updated deliverable "${del.label}" URL.`, { deliverableId, url: del.url });
   }
+
   if (updates.completed !== undefined) {
     del.completed = !!updates.completed;
   }
 
   saveHackathon(sessionCode, state);
   return { ok: true, deliverable: del, state };
+}
+
+
+function controlTimer(sessionCode, action, params = {}, authorName = 'Host') {
+  const state = getHackathonState(sessionCode, authorName);
+  if (!state) return { ok: false, error: 'Session not found' };
+
+  if (!state.timer) {
+    state.timer = {
+      durationMs: 25 * 60 * 1000,
+      remainingMs: 25 * 60 * 1000,
+      startedAt: null,
+      endsAt: null,
+      status: 'idle',
+      label: 'MVP Sprint',
+      updatedAt: Date.now(),
+    };
+  }
+
+  const timer = state.timer;
+  const now = Date.now();
+
+  switch (action) {
+    case 'configure': {
+      const h = parseInt(params.hours, 10) || 0;
+      const m = parseInt(params.minutes, 10) || 0;
+      const dur = (h * 3600 + m * 60) * 1000;
+      if (dur <= 0) {
+        return { ok: false, error: 'Timer duration must be greater than zero' };
+      }
+      timer.durationMs = dur;
+      timer.remainingMs = dur;
+      timer.status = 'idle';
+      timer.startedAt = null;
+      timer.endsAt = null;
+      if (typeof params.label === 'string') {
+        timer.label = params.label.trim().slice(0, 100);
+      }
+      timer.updatedAt = now;
+      break;
+    }
+
+    case 'start': {
+      let dur = timer.durationMs;
+      if (params.hours !== undefined || params.minutes !== undefined || params.durationMs !== undefined) {
+        dur = params.durationMs !== undefined
+          ? parseInt(params.durationMs, 10)
+          : ((parseInt(params.hours, 10) || 0) * 3600 + (parseInt(params.minutes, 10) || 0) * 60) * 1000;
+        if (isNaN(dur) || dur <= 0) {
+          return { ok: false, error: 'Timer duration must be greater than zero' };
+        }
+        timer.durationMs = dur;
+        timer.remainingMs = dur;
+      } else {
+        if (timer.status === 'paused' && timer.remainingMs > 0) {
+          // Keep remainingMs when starting from paused without parameters
+        } else {
+          if (!timer.durationMs || timer.durationMs <= 0) {
+            timer.durationMs = 25 * 60 * 1000;
+          }
+          timer.remainingMs = timer.durationMs;
+        }
+      }
+
+      if (typeof params.label === 'string') {
+        timer.label = params.label.trim().slice(0, 100);
+      }
+      timer.startedAt = now;
+      timer.endsAt = now + timer.remainingMs;
+      timer.status = 'running';
+      timer.updatedAt = now;
+      addPulseEvent(state, 'timer_started', authorName, `${authorName} started timer "${timer.label || 'Custom Timer'}".`);
+      break;
+    }
+
+    case 'pause': {
+      if (timer.status !== 'running') {
+        return { ok: false, error: 'Timer is not currently running' };
+      }
+      const rem = Math.max(0, (timer.endsAt || now) - now);
+      timer.remainingMs = rem;
+      timer.status = rem > 0 ? 'paused' : 'completed';
+      timer.startedAt = null;
+      timer.endsAt = null;
+      timer.updatedAt = now;
+      addPulseEvent(state, 'timer_paused', authorName, `${authorName} paused the timer.`);
+      break;
+    }
+
+    case 'resume': {
+      if (timer.status !== 'paused') {
+        return { ok: false, error: 'Timer is not paused' };
+      }
+      if (timer.remainingMs <= 0) {
+        return { ok: false, error: 'Timer has already completed' };
+      }
+      timer.startedAt = now;
+      timer.endsAt = now + timer.remainingMs;
+      timer.status = 'running';
+      timer.updatedAt = now;
+      addPulseEvent(state, 'timer_resumed', authorName, `${authorName} resumed the timer.`);
+      break;
+    }
+
+    case 'reset': {
+      timer.status = 'idle';
+      if (!timer.durationMs || timer.durationMs <= 0) {
+        timer.durationMs = 25 * 60 * 1000;
+      }
+      timer.remainingMs = timer.durationMs;
+      timer.startedAt = null;
+      timer.endsAt = null;
+      if (typeof params.label === 'string') {
+        timer.label = params.label.trim().slice(0, 100);
+      }
+      timer.updatedAt = now;
+      addPulseEvent(state, 'timer_reset', authorName, `${authorName} reset the timer.`);
+      break;
+    }
+
+    default:
+      return { ok: false, error: `Invalid timer action: ${action}` };
+  }
+
+  saveHackathon(sessionCode, state);
+  return { ok: true, timer, state };
 }
 
 function updateNotes(sessionCode, notesUpdates, authorName) {
@@ -409,12 +647,14 @@ function clearHackathonSession(sessionCode) {
 module.exports = {
   getHackathonState,
   updateSetup,
+  updateDeadline,
   createTask,
   updateTask,
   deleteTask,
   updateMilestone,
   updateDeliverable,
   updateNotes,
+  controlTimer,
   clearHackathonSession,
   clearSession: clearHackathonSession,
   getNextBestActions,

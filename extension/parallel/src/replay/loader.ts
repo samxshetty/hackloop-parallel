@@ -5,6 +5,7 @@ import { showReplayPanel, getLastActiveReplay } from './panel';
 import { renderReplayHtml } from './viewerHtml';
 
 let lastReplayId: string | null = null;
+let lastSessionCode: string | null = null;
 let lastReplayData: ReplayData | null = null;
 let lastReplayReceivedAt = 0;
 let extContext: vscode.ExtensionContext | null = null;
@@ -62,6 +63,27 @@ export function saveLastName(name: string): void {
   }
 }
 
+
+export function saveLastSessionCode(code: string): void {
+  if (!code || typeof code !== 'string') {
+    return;
+  }
+  lastSessionCode = code;
+  try {
+    extContext?.workspaceState.update('parallel.lastSessionCode', code);
+    extContext?.globalState.update('parallel.lastSessionCode', code);
+  } catch {
+    // Ignore storage update errors
+  }
+}
+
+export function getLastSessionCode(): string {
+  return lastSessionCode ||
+    extContext?.workspaceState.get<string>('parallel.lastSessionCode') ||
+    extContext?.globalState.get<string>('parallel.lastSessionCode') ||
+    '';
+}
+
 export function getSavedName(): string {
   return session.name ||
     extContext?.workspaceState.get<string>('parallel.lastName') ||
@@ -71,12 +93,13 @@ export function getSavedName(): string {
 
 export async function requestReplay(id?: string): Promise<void> {
   const name = getSavedName();
+  const code = getLastSessionCode();
   try {
     await connect();
   } catch {
     // Connection attempt made; proceed with send if socket is open
   }
-  send({ t: 'replay_get', id: id || 'last', name });
+  send({ t: 'replay_get', id: id || 'last', name, code });
 }
 
 export function parseReplayFromHtml(html: string): ReplayData | null {
@@ -144,11 +167,24 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
   lastReplayId = context.workspaceState.get<string>('parallel.lastReplayId') ||
     context.globalState.get<string>('parallel.lastReplayId') ||
     null;
+  lastSessionCode = context.workspaceState.get<string>('parallel.lastSessionCode') ||
+    context.globalState.get<string>('parallel.lastSessionCode') ||
+    null;
+
+  let lastReplayErrorAt = 0;
+  onMessage('error', (msg: any) => {
+    if (msg?.msg === 'no replay') {
+      lastReplayErrorAt = Date.now();
+    }
+  });
 
   // On replay_ready: remember the id and offer to open
   onMessage('replay_ready', async (msg: any) => {
     if (msg && typeof msg.id === 'string') {
       saveLastReplayId(msg.id);
+      if (typeof msg.code === 'string') {
+        saveLastSessionCode(msg.code);
+      }
       const pick = await vscode.window.showInformationMessage('Session ended. Open replay?', 'Open Replay');
       if (pick === 'Open Replay') {
         await requestReplay(msg.id);
@@ -198,17 +234,21 @@ export function registerReplayLoader(context: vscode.ExtensionContext): void {
       extContext?.globalState.get<string>('parallel.lastReplayId') ||
       'last';
     const userName = getSavedName();
+    const code = getLastSessionCode();
 
     // 1. Try requesting from server over WebSocket
     try {
       await connect();
-      send({ t: 'replay_get', id: targetId, name: userName });
+      send({ t: 'replay_get', id: targetId, name: userName, code });
 
       // Wait up to 1.5 seconds for response from server
       const timeoutAt = Date.now() + 1500;
       while (Date.now() < timeoutAt) {
         if (lastReplayReceivedAt >= beforeTime) {
           return;
+        }
+        if (lastReplayErrorAt >= beforeTime) {
+          break;
         }
         await new Promise((r) => setTimeout(r, 50));
       }

@@ -93,6 +93,10 @@
       {
         "command": "parallel.openWrapped",
         "title": "Parallel: Session Wrapped"
+      },
+      {
+        "command": "parallel.openProjectFile",
+        "title": "Parallel: Open Shared Project File"
       }
     ],
     "viewsContainers": {
@@ -109,6 +113,13 @@
         {
           "id": "parallel.participants",
           "name": "Participants",
+          "icon": "media/icon.svg",
+          "type": "tree",
+          "contextualTitle": "Parallel"
+        },
+        {
+          "id": "parallel.projectFiles",
+          "name": "Project Files",
           "icon": "media/icon.svg",
           "type": "tree",
           "contextualTitle": "Parallel"
@@ -132,6 +143,33 @@
           "type": "boolean",
           "default": true,
           "description": "Whether to use GitHub profile avatars in Session Wrapped when signed into VS Code."
+        },
+        "parallel.share.scope": {
+          "type": "string",
+          "enum": [
+            "project",
+            "activeFileOnly"
+          ],
+          "default": "project",
+          "description": "Scope of files to share: entire workspace project or active file only."
+        },
+        "parallel.share.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Additional glob patterns to exclude from project sharing."
+        },
+        "parallel.share.includeSensitiveFiles": {
+          "type": "boolean",
+          "default": false,
+          "description": "Whether to include sensitive files (like .env). Filenames will be visible to guests, but secrets remain masked."
+        },
+        "parallel.share.maxFiles": {
+          "type": "number",
+          "default": 500,
+          "description": "Maximum number of files to share from the workspace folder."
         }
       }
     }

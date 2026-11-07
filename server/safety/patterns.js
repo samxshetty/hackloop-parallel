@@ -43,6 +43,17 @@ const patterns = [
     // Value >= 6 chars, case-insensitive.
     regex: /(?:^|[\s,;{([`'"])\b(password|secret|token|api_key|apikey)\b\s*([=:])\s*(["'`])([^"'\r\n`]{6,})\3/gi,
   },
+  {
+    name: 'Google API Key (AQ)',
+    // Matches Google API keys starting with "AQ." followed by 20+ URL-safe characters.
+    regex: /\bAQ\.[0-9A-Za-z\-_]{20,}\b/g,
+  },
+  {
+    name: 'Env Secret Assignment',
+    // Matches KEY=value or KEY: value where key contains key/secret/token/password/passwd/pwd/credential/private
+    // Value >= 6 chars, with or without quotes.
+    regex: /(?:^|[\r\n\s,;{(\[])(?:export\s+)?(?:["']([a-zA-Z0-9_.-]*(?:key|secret|token|password|passwd|pwd|credential|private)[a-zA-Z0-9_.-]*)["']|\b([a-zA-Z0-9_.-]*(?:key|secret|token|password|passwd|pwd|credential|private)[a-zA-Z0-9_.-]*))\s*([=:])\s*(?:(["'`])([^\r\n`"']*)\4|([^\s#;,`"'\r\n]+))/gi,
+  },
 ];
 
 module.exports = patterns;

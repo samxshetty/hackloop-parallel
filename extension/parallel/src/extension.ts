@@ -7,6 +7,11 @@ import { registerReplayLoader, saveLastName, saveLastSessionCode } from './repla
 import { AdminDashboardManager } from './dashboard/panel';
 import { HackathonManager } from './hackathon/panel';
 import { ParticipantsProvider } from './sidebar';
+import { ProjectTreeProvider } from './project/tree';
+import { scanProjectFiles, uploadProject, ScanResult, resetScannerWarningState } from './project/scanner';
+import { sanitizeRelativePath, isExcludedPath } from './project/paths';
+import * as path from 'path';
+import * as fs from 'fs';
 import { registerTerminal, closeTerminals } from './terminal';
 import { WrappedData } from './wrapped/types';
 import { countSessionCommits } from './wrapped/gitStats';
@@ -35,13 +40,21 @@ let pendingEditRequest = false;
 
 let editorOpening: Promise<void> | undefined;
 
-const cursors = new Map<string, { line: number; character: number }>();
+const cursors = new Map<string, { path?: string; line: number; character: number }>();
+const sendTimers = new Map<string, NodeJS.Timeout>();
+const localApplying = new Set<string>();
+let fsWatcher: vscode.FileSystemWatcher | undefined;
+const fsWatcherTimers = new Map<string, NodeJS.Timeout>();
 const cursorTypes = new Map<string, vscode.TextEditorDecorationType>();
 let cursorTimer: NodeJS.Timeout | undefined;
 
 const status = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left);
 
 const sidebar = new ParticipantsProvider();
+const projectTree = new ProjectTreeProvider();
+const fileContentCache = new Map<string, string>();
+const pendingFileRequests = new Map<string, ((text: string) => void)[]>();
+let lastScanResult: ScanResult | undefined;
 
 function updateStatus(code?: string) {
     if (!session.role) {
@@ -66,47 +79,91 @@ function languageFor(file: string): string | undefined {
     return ext ? map[ext] : undefined;
 }
 
+function getDocRelPath(doc: vscode.TextDocument | undefined): string | undefined {
+    if (!doc) return undefined;
+    if (doc.uri.scheme === SCHEME) {
+        return sanitizeRelativePath(doc.uri.path.replace(/^\/+/, '')) || undefined;
+    }
+    if (doc === hostDoc) {
+        return hostFileName;
+    }
+    if (doc.uri.scheme === 'file') {
+        const wf = vscode.workspace.getWorkspaceFolder(doc.uri);
+        if (wf) {
+            const rel = sanitizeRelativePath(path.relative(wf.uri.fsPath, doc.uri.fsPath));
+            if (rel && !isExcludedPath(rel)) {
+                return rel;
+            }
+        }
+    }
+    return undefined;
+}
+
 function isSharedDoc(doc: vscode.TextDocument): boolean {
-    return doc === hostDoc ||
-        (sharedUri !== undefined && doc.uri.toString() === sharedUri.toString());
+    if (doc === hostDoc) return true;
+    if (doc.uri.scheme === SCHEME) return true;
+    return getDocRelPath(doc) !== undefined;
+}
+
+function sendDocForPath(doc: vscode.TextDocument, relPath: string) {
+    const text = doc.getText();
+    const byteLen = Buffer.byteLength(text, 'utf8');
+    const isAct = relPath.toLowerCase() === hostFileName.toLowerCase();
+    const limit = isAct ? MAX_SHARE_BYTES : 1 * 1024 * 1024;
+    if (byteLen > limit) {
+        return;
+    }
+    fileContentCache.set(relPath, text);
+    if (isAct) {
+        sharedText = text;
+    }
+    send({ t: 'doc', text, file: relPath, path: relPath });
 }
 
 function sendDoc() {
     if (!hostDoc) {
         return;
     }
-    const text = hostDoc.getText();
-
-    if (Buffer.byteLength(text, 'utf8') > MAX_SHARE_BYTES) {
-        if (!warnedTooBig) {
-            warnedTooBig = true;
-            vscode.window.showWarningMessage(
-                'Parallel: this file is too large to share (over 4 MB). Changes are not being sent.');
-        }
-        return;
-    }
-    warnedTooBig = false;
-    send({ t: 'doc', text, file: hostFileName });
+    sendDocForPath(hostDoc, hostFileName);
 }
 
 async function showSharedDoc(text: string, file: string) {
     sharedText = text;
     sharedFile = file || sharedFile;
-    if (!sharedUri) {
-        sharedUri = vscode.Uri.from({ scheme: SCHEME, path: '/' + sharedFile });
-        const doc = await vscode.workspace.openTextDocument(sharedUri);
-        await vscode.window.showTextDocument(doc, { preview: false });
-    } else {
-        sharedChanged.fire(sharedUri);
+    fileContentCache.set(sharedFile, text);
+    const uri = vscode.Uri.from({ scheme: SCHEME, path: '/' + sharedFile });
+    sharedUri = uri;
+    sharedChanged.fire(uri);
+
+    const alreadyOpen = vscode.window.visibleTextEditors.some((e) => e.document.uri.toString() === uri.toString());
+    if (!alreadyOpen) {
+        try {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, { preview: false });
+        } catch (err) {
+            console.error('Parallel: failed to show shared doc', err);
+        }
     }
 }
 
-async function applyRemote(text: string) {
-    sharedText = text;
-    if (!hostDoc) {
+async function applyRemote(text: string, filePath?: string) {
+    const targetPath = filePath || sharedFile;
+    fileContentCache.set(targetPath, text);
+    if (targetPath.toLowerCase() === hostFileName.toLowerCase() || targetPath.toLowerCase() === sharedFile.toLowerCase()) {
+        sharedText = text;
+    }
+
+    const editor = vscode.window.visibleTextEditors.find((e) => {
+        const r = getDocRelPath(e.document);
+        return r && r.toLowerCase() === targetPath.toLowerCase();
+    });
+
+    if (!editor) {
         return;
     }
-    const old = hostDoc.getText();
+
+    const doc = editor.document;
+    const old = doc.getText();
     if (old === text) {
         return;
     }
@@ -124,17 +181,22 @@ async function applyRemote(text: string) {
         newEnd--;
     }
 
-    clearTimeout(sendTimer);
+    const timer = sendTimers.get(targetPath.toLowerCase());
+    if (timer) clearTimeout(timer);
+
+    const cleanKey = targetPath.toLowerCase();
+    localApplying.add(cleanKey);
     applyingRemote = true;
     try {
         const range = new vscode.Range(
-            hostDoc.positionAt(start),
-            hostDoc.positionAt(oldEnd));
+            doc.positionAt(start),
+            doc.positionAt(oldEnd));
         const edit = new vscode.WorkspaceEdit();
-        edit.replace(hostDoc.uri, range, text.slice(start, newEnd));
+        edit.replace(doc.uri, range, text.slice(start, newEnd));
         await vscode.workspace.applyEdit(edit);
     } finally {
         applyingRemote = false;
+        setTimeout(() => localApplying.delete(cleanKey), 150);
     }
 }
 
@@ -213,6 +275,11 @@ function resetShared() {
     pendingEditRequest = false;
     clearCursors();
     sidebar.setPeers([]);
+    fileContentCache.clear();
+    pendingFileRequests.clear();
+    projectTree.clear();
+    lastScanResult = undefined;
+    resetScannerWarningState();
 }
 
 function hueFor(name: string): number {
@@ -239,7 +306,12 @@ function repaintCursors() {
         if (!isSharedDoc(editor.document)) {
             continue;
         }
+        const editorRelPath = getDocRelPath(editor.document);
         for (const [name, c] of cursors) {
+            if (c.path && editorRelPath && c.path.toLowerCase() !== editorRelPath.toLowerCase()) {
+                editor.setDecorations(typeFor(name), []);
+                continue;
+            }
             const doc = editor.document;
             const start = doc.validatePosition(new vscode.Position(c.line, c.character));
             const end = doc.validatePosition(new vscode.Position(c.line, c.character + 1));
@@ -295,12 +367,20 @@ export function activate(context: vscode.ExtensionContext) {
     AdminDashboardManager.getInstance().init(context);
     HackathonManager.getInstance().init(context);
 
-    onMessage('created', (msg) => {
+    onMessage('created', async (msg) => {
         joinedOk = true;
         saveLastSessionCode(msg.code);
         showCode(msg.code);
         sendDoc();
         updateStatus(msg.code);
+        if (lastScanResult && hostDoc) {
+            projectTree.setManifest(lastScanResult.manifest);
+            try {
+                await uploadProject(lastScanResult, hostDoc, send);
+            } catch (err) {
+                console.error('Parallel: failed to upload project', err);
+            }
+        }
     });
     onMessage('join_request', (msg) => handleJoinRequest(msg.name));
     onMessage('joined', (msg) => {
@@ -325,16 +405,42 @@ export function activate(context: vscode.ExtensionContext) {
         console.log('peers:', lastPeers);
         sendDoc();
     });
+    onMessage('project_update', (msg) => {
+        if (msg && Array.isArray(msg.manifest)) {
+            projectTree.setManifest(msg.manifest);
+        }
+    });
+    onMessage('file_response', (msg) => {
+        if (!msg || typeof msg.path !== 'string') return;
+        const relPath = msg.path;
+        fileContentCache.set(relPath, msg.text || '');
+        const uri = vscode.Uri.from({ scheme: SCHEME, path: '/' + relPath });
+        sharedChanged.fire(uri);
+        const waiters = pendingFileRequests.get(relPath);
+        if (waiters) {
+            for (const resolve of waiters) {
+                resolve(msg.text || '');
+            }
+            pendingFileRequests.delete(relPath);
+        }
+    });
     onMessage('doc', (msg) => {
+        const filePath = msg.path || msg.file || sharedFile;
+        fileContentCache.set(filePath, msg.text);
+        const uri = vscode.Uri.from({ scheme: SCHEME, path: '/' + filePath });
+        sharedChanged.fire(uri);
         if (isEditor()) {
-            applyRemote(msg.text).then(repaintCursors);
+            applyRemote(msg.text, filePath).then(repaintCursors);
         } else {
-            showSharedDoc(msg.text, msg.file);
+            showSharedDoc(msg.text, filePath);
             setTimeout(repaintCursors, 100);
         }
     });
     onMessage('cursor', (msg) => {
-        cursors.set(msg.name, { line: msg.line, character: msg.character });
+        cursors.set(msg.name, { path: msg.path, line: msg.line, character: msg.character });
+        if (msg.path) {
+            sidebar.updatePeerFile(msg.name, msg.path);
+        }
         repaintCursors();
     });
     onMessage('cursor_gone', (msg) => removeCursor(msg.name));
@@ -499,7 +605,9 @@ export function activate(context: vscode.ExtensionContext) {
         session.name = name.trim().slice(0, 30);
         saveLastName(session.name);
         hostDoc = editor.document;
-        hostFileName = baseName(editor.document.fileName);
+        const scanResult = await scanProjectFiles(editor.document);
+        lastScanResult = scanResult;
+        hostFileName = scanResult.activeRelativePath;
         const githubLogin = await getSilentGithubLogin();
         send({ t: 'create', name: session.name, githubLogin });
     });
@@ -657,9 +765,27 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            const editor = (vscode.window.activeTextEditor && isSharedDoc(vscode.window.activeTextEditor.document))
-                ? vscode.window.activeTextEditor
-                : vscode.window.visibleTextEditors.find((e) => isSharedDoc(e.document));
+            let editor: vscode.TextEditor | undefined;
+            if (pos.path) {
+                editor = vscode.window.visibleTextEditors.find((e) => {
+                    const r = getDocRelPath(e.document);
+                    return r && r.toLowerCase() === pos.path!.toLowerCase();
+                });
+                if (!editor) {
+                    const uri = vscode.Uri.from({ scheme: SCHEME, path: '/' + pos.path });
+                    try {
+                        const doc = await vscode.workspace.openTextDocument(uri);
+                        editor = await vscode.window.showTextDocument(doc, { preview: false });
+                    } catch (err) {
+                        console.error('Parallel: failed to open document on jump', err);
+                    }
+                }
+            }
+            if (!editor) {
+                editor = (vscode.window.activeTextEditor && isSharedDoc(vscode.window.activeTextEditor.document))
+                    ? vscode.window.activeTextEditor
+                    : vscode.window.visibleTextEditors.find((e) => isSharedDoc(e.document));
+            }
 
             if (!editor) {
                 vscode.window.showInformationMessage('The shared file is not open in an editor.');
@@ -674,15 +800,44 @@ export function activate(context: vscode.ExtensionContext) {
 
     const provider = vscode.workspace.registerTextDocumentContentProvider(SCHEME, {
         onDidChange: sharedChanged.event,
-        provideTextDocumentContent: () => sharedText,
+        provideTextDocumentContent: (uri) => {
+            const relPath = uri.path.replace(/^\/+/, '');
+            if (fileContentCache.has(relPath)) {
+                return fileContentCache.get(relPath)!;
+            }
+            if (relPath === sharedFile || relPath === baseName(sharedFile)) {
+                return sharedText;
+            }
+            send({ t: 'file_request', path: relPath });
+            return new Promise<string>((resolve) => {
+                let waiters = pendingFileRequests.get(relPath);
+                if (!waiters) {
+                    waiters = [];
+                    pendingFileRequests.set(relPath, waiters);
+                }
+                waiters.push(resolve);
+                setTimeout(() => {
+                    resolve(fileContentCache.get(relPath) || '// Content not available');
+                }, 5000);
+            });
+        },
     });
 
     const watcher = vscode.workspace.onDidChangeTextDocument((e) => {
-        if (!isEditor() || e.document !== hostDoc || applyingRemote) {
+        if (!isEditor() || applyingRemote) {
             return;
         }
-        clearTimeout(sendTimer);
-        sendTimer = setTimeout(sendDoc, 100);
+        const relPath = getDocRelPath(e.document);
+        if (!relPath) return;
+        const cleanKey = relPath.toLowerCase();
+        if (localApplying.has(cleanKey)) return;
+
+        const timer = sendTimers.get(cleanKey);
+        if (timer) clearTimeout(timer);
+        sendTimers.set(cleanKey, setTimeout(() => {
+            sendTimers.delete(cleanKey);
+            sendDocForPath(e.document, relPath);
+        }, 100));
     });
 
     const selectionWatcher = vscode.window.onDidChangeTextEditorSelection((e) => {
@@ -692,7 +847,8 @@ export function activate(context: vscode.ExtensionContext) {
         clearTimeout(cursorTimer);
         cursorTimer = setTimeout(() => {
             const p = e.selections[0].active;
-            send({ t: 'cursor', line: p.line, character: p.character });
+            const relPath = getDocRelPath(e.textEditor.document);
+            send({ t: 'cursor', path: relPath, line: p.line, character: p.character });
         }, 50);
     });
 
@@ -715,11 +871,59 @@ export function activate(context: vscode.ExtensionContext) {
         }
     });
 
+    const openProjectFile = vscode.commands.registerCommand(
+        'parallel.openProjectFile',
+        async (relPath?: string) => {
+            if (!relPath) return;
+            const cleanRel = relPath.replace(/\\/g, '/').replace(/^\/+/, '');
+            const uri = vscode.Uri.from({ scheme: SCHEME, path: '/' + cleanRel });
+            try {
+                const doc = await vscode.workspace.openTextDocument(uri);
+                await vscode.window.showTextDocument(doc, { preview: false });
+            } catch (err: any) {
+                vscode.window.showErrorMessage('Failed to open shared file: ' + (err?.message || err));
+            }
+        }
+    );
+
     const participantsView = vscode.window.registerTreeDataProvider('parallel.participants', sidebar);
+    const projectFilesView = vscode.window.registerTreeDataProvider('parallel.projectFiles', projectTree);
     const terminalDisposables = registerTerminal();
 
+
+    // Host-side FileSystemWatcher for external file creates/changes/deletions
+    const wf = vscode.workspace.workspaceFolders?.[0];
+    if (wf) {
+        fsWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(wf, '**/*'));
+        const handleFs = async (uri: vscode.Uri) => {
+            if (session.role !== 'superhost' && session.role !== 'host') return;
+            const rel = sanitizeRelativePath(vscode.workspace.asRelativePath(uri, false));
+            if (!rel || isExcludedPath(rel)) return;
+            const cleanKey = rel.toLowerCase();
+            if (localApplying.has(cleanKey)) return;
+
+            const timer = fsWatcherTimers.get(cleanKey);
+            if (timer) clearTimeout(timer);
+            fsWatcherTimers.set(cleanKey, setTimeout(async () => {
+                fsWatcherTimers.delete(cleanKey);
+                try {
+                    const stat = await fs.promises.lstat(uri.fsPath);
+                    if (stat.isSymbolicLink() || stat.isDirectory()) return;
+                    if (stat.size > 1 * 1024 * 1024) return;
+                    const content = await fs.promises.readFile(uri.fsPath, 'utf8');
+                    fileContentCache.set(rel, content);
+                    send({ t: 'doc', text: content, file: rel, path: rel });
+                } catch {
+                    // file deleted or unreadable
+                }
+            }, 100));
+        };
+        fsWatcher.onDidChange(handleFs);
+        fsWatcher.onDidCreate(handleFs);
+        context.subscriptions.push(fsWatcher);
+    }
     context.subscriptions.push(
-        start, endSession, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, openWrapped, provider,
+        start, endSession, join, changeRole, requestEdit, grantEdit, revokeEdit, jumpToPerson, openDashboard, openHackathonMode, openWrapped, openProjectFile, provider, projectFilesView,
         watcher, selectionWatcher, visibleWatcher, status, participantsView, ...terminalDisposables);
 }
 
